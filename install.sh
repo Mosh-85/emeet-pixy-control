@@ -12,8 +12,12 @@ APP_HOME="$DATA_HOME/emeet-pixy-control"
 VENV="$APP_HOME/venv"
 DESKTOP_DIR="$DATA_HOME/applications"
 ICON_DIR="$DATA_HOME/icons/hicolor/scalable/apps"
+BIN_DIR=${XDG_BIN_HOME:-"$HOME/.local/bin"}
 DESKTOP_FILE="$DESKTOP_DIR/emeet-pixy-control.desktop"
+TEST_DESKTOP_FILE="$DESKTOP_DIR/emeet-pixy-control-foreground.desktop"
 ICON_FILE="$ICON_DIR/emeet-pixy-control.svg"
+USER_SERVICE_DIR="$HOME/.config/systemd/user"
+USER_SERVICE_FILE="$USER_SERVICE_DIR/emeet-pixy-control.service"
 
 need=()
 for cmd in python3 ffmpeg v4l2-ctl v4l2loopback-ctl modprobe systemctl; do
@@ -39,7 +43,7 @@ if ! python3 -m venv --help >/dev/null 2>&1; then
     exit 1
 fi
 
-mkdir -p "$APP_HOME" "$DESKTOP_DIR" "$ICON_DIR"
+mkdir -p "$APP_HOME" "$DESKTOP_DIR" "$ICON_DIR" "$BIN_DIR" "$USER_SERVICE_DIR"
 
 if [[ ! -x "$VENV/bin/python" ]]; then
     python3 -m venv "$VENV"
@@ -50,8 +54,46 @@ fi
 install -m 0644 "$ROOT/assets/emeet-pixy-control.svg" "$ICON_FILE"
 
 exec_path="$VENV/bin/emeet-pixy-control"
+foreground_exec="$exec_path --foreground"
+
 sed "s#@EXEC@#$exec_path#g" "$ROOT/deploy/emeet-pixy-control.desktop.in" > "$DESKTOP_FILE"
 chmod 0644 "$DESKTOP_FILE"
+
+sed "s#@EXEC@#$foreground_exec#g" "$ROOT/deploy/emeet-pixy-control.desktop.in" | \
+    sed "s#Name=EMEET PIXY Control#Name=EMEET PIXY Control (Preview Test)#" > "$TEST_DESKTOP_FILE"
+chmod 0644 "$TEST_DESKTOP_FILE"
+
+rm -f "$BIN_DIR/emeet-pixy-privacy-toggle" \
+      "$BIN_DIR/emeet-pixy-privacy-on" \
+      "$BIN_DIR/emeet-pixy-privacy-off"
+install -m 0755 "$ROOT/deploy/emeet-pixy-privacy-toggle" "$BIN_DIR/emeet-pixy-privacy-toggle"
+ln -sf "$BIN_DIR/emeet-pixy-privacy-toggle" "$BIN_DIR/emeet-pixy-privacy-on"
+ln -sf "$BIN_DIR/emeet-pixy-privacy-toggle" "$BIN_DIR/emeet-pixy-privacy-off"
+
+cat > "$USER_SERVICE_FILE" <<SERVICE
+[Unit]
+Description=EMEET PIXY Control background service
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=$exec_path --background
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+SERVICE
+chmod 0644 "$USER_SERVICE_FILE"
+
+if systemctl --user --version >/dev/null 2>&1; then
+    if command -v loginctl >/dev/null 2>&1; then
+        sudo loginctl enable-linger "$USER" || true
+    fi
+    systemctl --user daemon-reload
+    systemctl --user enable emeet-pixy-control.service
+    systemctl --user restart emeet-pixy-control.service || true
+fi
 
 sudo install -m 0644 "$ROOT/deploy/70-emeet-pixy.rules" /etc/udev/rules.d/70-emeet-pixy.rules
 sudo install -d -m 0755 /usr/local/lib/emeet-pixy-control
@@ -86,6 +128,12 @@ cat <<MSG
 EMEET PIXY Control installed.
 
 Launch it from your application menu: EMEET PIXY Control
+Foreground testing launch: EMEET PIXY Control (Preview Test)
+Background autostart: enabled for your user session
+Quick privacy actions:
+  $BIN_DIR/emeet-pixy-privacy-toggle
+  $BIN_DIR/emeet-pixy-privacy-on
+  $BIN_DIR/emeet-pixy-privacy-off
 CLI backend: $VENV/bin/emeet-pixy-cli
 
 If HID controls are denied, unplug/replug the PIXY once (or log out/in).

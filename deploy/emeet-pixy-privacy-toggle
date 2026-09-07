@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ACTION="${1:-toggle}"
+VENV_BIN="${EMEET_PIXY_VENV_BIN:-$HOME/.local/share/emeet-pixy-control/venv/bin}"
+STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+STATE_DIR="$STATE_HOME/emeet-pixy-control"
+STATE_FILE="$STATE_DIR/privacy-state"
+BACKEND="$VENV_BIN/emeet-pixy-cli"
+
+mkdir -p "$STATE_DIR"
+
+if [[ ! -x "$BACKEND" ]]; then
+    echo "EMEET PIXY CLI not found at $BACKEND" >&2
+    exit 1
+fi
+
+current_state="off"
+if [[ -f "$STATE_FILE" ]]; then
+    current_state=$(tr -d '\r\n' < "$STATE_FILE" || true)
+fi
+
+case "$ACTION" in
+    on|privacy)
+        "$BACKEND" privacy
+        printf '%s\n' "on" > "$STATE_FILE"
+        ;;
+    off|idle)
+        "$BACKEND" idle
+        printf '%s\n' "off" > "$STATE_FILE"
+        ;;
+    track)
+        "$BACKEND" track
+        printf '%s\n' "off" > "$STATE_FILE"
+        ;;
+    toggle)
+        if [[ "$current_state" == "on" ]]; then
+            "$BACKEND" idle
+            printf '%s\n' "off" > "$STATE_FILE"
+        else
+            "$BACKEND" privacy
+            printf '%s\n' "on" > "$STATE_FILE"
+        fi
+        ;;
+    *)
+        echo "Usage: $(basename "$0") [on|off|toggle|track|privacy|idle]" >&2
+        exit 2
+        ;;
+esac

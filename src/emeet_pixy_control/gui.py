@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 
+import argparse
 import sys
 import subprocess
 import shutil
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QSettings, QTimer, QProcess
-from PySide6.QtGui import QIcon
+from emeet_pixy_control import __version__
+
+from PySide6.QtCore import QLockFile, Qt, QSettings, QTimer, QProcess
+from PySide6.QtGui import QAction, QIcon
 from PySide6.QtMultimedia import QCamera, QMediaCaptureSession, QMediaDevices
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QGridLayout, QGroupBox, QHBoxLayout,
     QLabel, QMainWindow, QPushButton, QSlider, QVBoxLayout, QWidget,
-    QScrollArea, QSplitter, QFrame
+    QScrollArea, QSplitter, QFrame, QMenu, QMessageBox, QSystemTrayIcon
 )
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -21,27 +24,272 @@ ICON = PACKAGE_DIR / "assets" / "emeet-pixy-control.svg"
 FFMPEG = shutil.which("ffmpeg")
 V4L2_CTL = shutil.which("v4l2-ctl")
 
+APP_STYLESHEET = """
+QWidget {
+    background: #111820;
+    color: #e8f0ef;
+    font-size: 10pt;
+}
+
+QMainWindow {
+    background: #111820;
+}
+
+QFrame#statusPanel {
+    background: #17252c;
+    border: 1px solid #2c535b;
+    border-radius: 6px;
+    padding: 3px 8px;
+}
+
+QGroupBox {
+    background: #1a2730;
+    border: 1px solid #334954;
+    border-radius: 8px;
+    margin-top: 14px;
+    padding: 18px 10px 10px;
+    font-weight: 600;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 12px;
+    padding: 0 5px;
+    color: #8ce7dd;
+}
+
+QLabel#appTitle {
+    color: #f4fbfa;
+    letter-spacing: 1px;
+}
+
+QLabel#message {
+    background: #17252c;
+    border: 1px solid #2c535b;
+    border-radius: 6px;
+    color: #9debe3;
+    padding: 8px;
+}
+
+QLabel#modeLabel {
+    color: #f2b66d;
+}
+
+QLabel#statusLabel, QLabel#previewStatus, QLabel#virtualStatus {
+    color: #a9babd;
+}
+
+QPushButton {
+    background: #263842;
+    border: 1px solid #405761;
+    border-radius: 6px;
+    padding: 7px 12px;
+    min-height: 18px;
+}
+
+QPushButton:hover {
+    background: #304b54;
+    border-color: #62d8ce;
+}
+
+QPushButton:pressed {
+    background: #1b676d;
+}
+
+QPushButton:disabled {
+    background: #1a252b;
+    border-color: #2b373d;
+    color: #68777a;
+}
+
+QPushButton#primaryButton {
+    background: #167c7b;
+    border-color: #63dfd4;
+    color: #f4fffd;
+    font-weight: 600;
+}
+
+QPushButton#dangerButton {
+    background: #62373b;
+    border-color: #a95d61;
+}
+
+QPushButton#privacyButton {
+    background: #5b3e2c;
+    border-color: #d19a5b;
+}
+
+QComboBox, QSlider {
+    background: #202f38;
+}
+
+QComboBox {
+    border: 1px solid #405761;
+    border-radius: 5px;
+    padding: 6px 8px;
+    min-height: 20px;
+}
+
+QComboBox:hover {
+    border-color: #62d8ce;
+}
+
+QComboBox QAbstractItemView {
+    background: #1a2730;
+    border: 1px solid #405761;
+    selection-background-color: #167c7b;
+    selection-color: #f4fffd;
+}
+
+QSlider::groove:horizontal {
+    height: 5px;
+    background: #344852;
+    border-radius: 2px;
+}
+
+QSlider::handle:horizontal {
+    width: 16px;
+    margin: -6px 0;
+    background: #62d8ce;
+    border: 2px solid #b6fff8;
+    border-radius: 8px;
+}
+
+QScrollArea, QScrollArea > QWidget > QWidget {
+    background: #111820;
+}
+
+QScrollBar:vertical {
+    background: #111820;
+    width: 10px;
+    margin: 2px;
+}
+
+QScrollBar::handle:vertical {
+    background: #405761;
+    border-radius: 5px;
+    min-height: 24px;
+}
+
+QVideoWidget {
+    background: #080d10;
+    border: 1px solid #334954;
+    border-radius: 6px;
+}
+"""
+
+
+def normalize_choice(value, valid_values, default):
+    if value in valid_values:
+        return value
+
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        for choice in valid_values:
+            if str(choice).lower() == normalized:
+                return choice
+
+    return default
+
+
+def resolve_startup_tracking(saved_tracking, default_tracking, privacy_default):
+    if privacy_default:
+        return "privacy"
+
+    tracking = normalize_choice(
+        saved_tracking,
+        ("idle", "track", "privacy"),
+        "idle",
+    )
+
+    if tracking == "privacy":
+        return normalize_choice(
+            default_tracking,
+            ("idle", "track"),
+            "idle",
+        )
+
+    return tracking
+
+
+def camera_toggle_tracking_mode(
+    enabled,
+    saved_tracking="idle",
+    default_tracking="idle",
+):
+    if not enabled:
+        return "privacy"
+
+    tracking = normalize_choice(
+        saved_tracking,
+        ("idle", "track", "privacy"),
+        "idle",
+    )
+
+    if tracking == "privacy":
+        return normalize_choice(
+            default_tracking,
+            ("idle", "track"),
+            "idle",
+        )
+
+    return tracking
+
+
+def should_autostart_virtual_camera(background_mode, configured):
+    return background_mode and configured
+
+
+def background_service_is_active():
+    result = subprocess.run(
+        ["systemctl", "--user", "is-active", "--quiet", "emeet-pixy-control.service"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
 
 class PixyGUI(QMainWindow):
-    def __init__(self):
+    def __init__(self, start_minimized=False):
         super().__init__()
+        self.start_minimized = start_minimized
+        self.quitting = False
+        self.tray = None
+        self.tray_camera_action = None
 
         self.settings = QSettings("emeet-pixy", "control")
         self.camera = None
         self.capture_session = None
+        self.camera_enabled = True
         self.restoring = False
         self.preview_released = False
 
         self.virtual_process = None
         self.virtual_active = False
         self.virtual_stopping = False
+        self.virtual_starting = False
+        self.virtual_lock = QLockFile(
+            str(Path("/tmp/emeet-pixy-control-virtual-camera.lock"))
+        )
+        self.virtual_lock_held = False
         self.preview_before_virtual = True
+        self.camera_before_virtual = True
+        self.camera_override_tracking = None
+        self.preview_compact = False
+        self.full_window_size = None
 
         # Resolution selector data:
         # { "3840x2160": QCameraFormat, ... }
         self.camera_formats = {}
 
-        self.setWindowTitle("EMEET PIXY Control")
+        self.launch_mode = (
+            "Background autostart"
+            if start_minimized
+            else "Preview test"
+        )
+
+        self.setWindowTitle(f"EMEET PIXY Control v{__version__}")
         if ICON.exists():
             self.setWindowIcon(QIcon(str(ICON)))
         self.resize(1100, 700)
@@ -67,6 +315,7 @@ class PixyGUI(QMainWindow):
         header = QHBoxLayout()
 
         title = QLabel("EMEET PIXY")
+        title.setObjectName("appTitle")
         font = title.font()
         font.setPointSize(18)
         font.setBold(True)
@@ -75,12 +324,47 @@ class PixyGUI(QMainWindow):
         self.device_label = QLabel("Detecting camera...")
         self.device_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
+        self.version_label = QLabel(f"v{__version__}")
+        self.version_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.version_label.setToolTip("Application version")
+
+        self.mode_label = QLabel(f"Mode: {self.launch_mode}")
+        self.mode_label.setObjectName("modeLabel")
+        self.mode_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.mode_label.setStyleSheet("QLabel { font-weight: 600; }")
+
+        self.preview_restore_button = QPushButton("Resume Preview")
+        self.preview_restore_button.setObjectName("primaryButton")
+        self.preview_restore_button.clicked.connect(self.toggle_preview)
+        self.preview_restore_button.hide()
+
+        self.camera_toggle_button = QPushButton("Turn Camera Off")
+        self.camera_toggle_button.clicked.connect(self.toggle_camera)
+        self.camera_toggle_button.setToolTip(
+            "Enable or disable the physical camera stream"
+        )
+
         header.addWidget(title)
         header.addStretch()
-        header.addWidget(self.device_label)
+        header.addWidget(self.preview_restore_button)
+        header.addWidget(self.camera_toggle_button)
         main.addLayout(header)
 
-        self.message = QLabel("Ready")
+        status_panel = QFrame()
+        status_panel.setObjectName("statusPanel")
+        status_layout = QHBoxLayout(status_panel)
+        status_layout.setContentsMargins(8, 3, 8, 3)
+        status_layout.addWidget(self.mode_label)
+        status_layout.addStretch()
+        status_layout.addWidget(self.device_label)
+        status_layout.addSpacing(12)
+        status_layout.addWidget(self.version_label)
+        main.addWidget(status_panel)
+
+        self.message = QLabel(
+            f"Ready — {self.launch_mode} mode"
+        )
+        self.message.setObjectName("message")
         self.message.setAlignment(Qt.AlignCenter)
         main.addWidget(self.message)
 
@@ -89,6 +373,7 @@ class PixyGUI(QMainWindow):
 
         # Live preview
         preview_box = QGroupBox("Live Preview")
+        self.preview_box = preview_box
         preview_layout = QVBoxLayout(preview_box)
 
         self.video_widget = QVideoWidget()
@@ -117,6 +402,7 @@ class PixyGUI(QMainWindow):
         preview_layout.addWidget(self.released_panel)
 
         self.preview_status = QLabel("Starting camera...")
+        self.preview_status.setObjectName("previewStatus")
         self.preview_status.setAlignment(Qt.AlignCenter)
         preview_layout.addWidget(self.preview_status)
 
@@ -193,12 +479,13 @@ class PixyGUI(QMainWindow):
         controls.addWidget(zoom_box)
 
         # Tracking / Privacy
-        tracking_box = QGroupBox("Tracking / Privacy")
+        tracking_box = QGroupBox("Face Tracking")
         tracking = QGridLayout(tracking_box)
 
         track = QPushButton("Tracking ON")
         idle = QPushButton("Tracking OFF")
-        privacy = QPushButton("Privacy")
+        privacy = QPushButton("Privacy Mode")
+        privacy.setObjectName("privacyButton")
 
         track.clicked.connect(lambda: self.set_tracking_mode("track"))
         idle.clicked.connect(lambda: self.set_tracking_mode("idle"))
@@ -258,6 +545,75 @@ class PixyGUI(QMainWindow):
 
         controls.addWidget(flicker_box)
 
+        # Startup defaults
+        defaults_box = QGroupBox("Startup Defaults")
+        defaults_layout = QVBoxLayout(defaults_box)
+
+        defaults_title = QLabel("Choose what the camera should do when the app opens.")
+        defaults_title.setWordWrap(True)
+        defaults_title.setStyleSheet("QLabel { color: palette(mid); }")
+
+        self.default_tracking = QComboBox()
+        self.default_tracking.addItem("Tracking OFF", "idle")
+        self.default_tracking.addItem("Tracking ON", "track")
+
+        self.default_camera = QComboBox()
+        self.default_camera.addItem("Camera preview at startup: OFF", False)
+        self.default_camera.addItem("Camera preview at startup: ON", True)
+
+        self.default_virtual_camera = QComboBox()
+        self.default_virtual_camera.addItem(
+            "Virtual camera at startup: OFF", False
+        )
+        self.default_virtual_camera.addItem(
+            "Virtual camera at startup: ON", True
+        )
+
+        self.default_privacy = QComboBox()
+        self.default_privacy.addItem("Privacy at startup: OFF", False)
+        self.default_privacy.addItem("Privacy at startup: ON", True)
+
+        self.default_gesture = QComboBox()
+        self.default_gesture.addItem("Gesture OFF", False)
+        self.default_gesture.addItem("Gesture ON", True)
+
+        self.default_audio = QComboBox()
+        self.default_audio.addItem("Noise Cancel", "nc")
+        self.default_audio.addItem("Live", "live")
+        self.default_audio.addItem("Original", "org")
+
+        self.default_flicker = QComboBox()
+        self.default_flicker.addItem("60 Hz", "60")
+        self.default_flicker.addItem("50 Hz", "50")
+        self.default_flicker.addItem("Off", "off")
+
+        defaults_row = QHBoxLayout()
+        defaults_apply = QPushButton("Save Defaults")
+        defaults_apply.clicked.connect(self.apply_default_settings)
+        defaults_reset = QPushButton("Reset")
+        defaults_reset.clicked.connect(self.reset_default_settings)
+        defaults_row.addWidget(defaults_apply)
+        defaults_row.addWidget(defaults_reset)
+
+        defaults_note = QLabel(
+            "Saved immediately, and also persisted when the app closes."
+        )
+        defaults_note.setWordWrap(True)
+        defaults_note.setStyleSheet("QLabel { color: palette(mid); }")
+
+        defaults_layout.addWidget(defaults_title)
+        defaults_layout.addWidget(self.default_tracking)
+        defaults_layout.addWidget(self.default_camera)
+        defaults_layout.addWidget(self.default_virtual_camera)
+        defaults_layout.addWidget(self.default_privacy)
+        defaults_layout.addWidget(self.default_gesture)
+        defaults_layout.addWidget(self.default_audio)
+        defaults_layout.addWidget(self.default_flicker)
+        defaults_layout.addLayout(defaults_row)
+        defaults_layout.addWidget(defaults_note)
+
+        controls.addWidget(defaults_box)
+
         # Virtual Camera
         virtual_box = QGroupBox("Virtual Camera")
         virtual_layout = QGridLayout(virtual_box)
@@ -266,10 +622,13 @@ class PixyGUI(QMainWindow):
         self.virtual_device_status.setAlignment(Qt.AlignCenter)
 
         self.virtual_status = QLabel("Pipeline: Stopped")
+        self.virtual_status.setObjectName("virtualStatus")
         self.virtual_status.setAlignment(Qt.AlignCenter)
 
         self.virtual_start = QPushButton("Start")
         self.virtual_stop = QPushButton("Stop")
+        self.virtual_start.setObjectName("primaryButton")
+        self.virtual_stop.setObjectName("dangerButton")
 
         self.virtual_start.clicked.connect(
             self.start_virtual_camera
@@ -301,6 +660,7 @@ class PixyGUI(QMainWindow):
         status_layout = QVBoxLayout(status_box)
 
         self.status = QLabel("Checking...")
+        self.status.setObjectName("statusLabel")
         self.status.setAlignment(Qt.AlignCenter)
 
         refresh = QPushButton("Refresh Status")
@@ -326,8 +686,20 @@ class PixyGUI(QMainWindow):
 
         main.addWidget(self.body_splitter, 1)
 
+        self.setup_tray()
+
         self.load_saved_ui_state()
-        self.start_camera()
+        device = self.find_pixy_camera()
+        if device is not None and not self.camera_formats:
+            self.populate_resolutions(device)
+
+        if self.start_minimized:
+            self.camera_enabled = False
+
+        if self.camera_enabled:
+            self.start_camera()
+        else:
+            self.set_camera_enabled(False)
         self.refresh_status(save=False)
 
         self.refresh_virtual_device_status()
@@ -338,12 +710,133 @@ class PixyGUI(QMainWindow):
         )
         self.virtual_device_timer.start(3000)
 
+        if should_autostart_virtual_camera(
+            self.start_minimized,
+            bool(self.default_virtual_camera.currentData()),
+        ):
+            QTimer.singleShot(
+                1500,
+                self.start_background_virtual_camera,
+            )
+
         # Allow USB/video startup to settle before restoring saved settings.
         QTimer.singleShot(800, self.restore_camera_state)
+
+        if self.start_minimized:
+            self.showMinimized()
 
     # --------------------------------------------------
     # CAMERA PREVIEW
     # --------------------------------------------------
+
+    def setup_tray(self):
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+
+        self.tray = QSystemTrayIcon(self)
+        self.tray.setIcon(QIcon(str(ICON)))
+        self.tray.setToolTip("EMEET PIXY Control")
+
+        menu = QMenu()
+
+        show_action = QAction("Show Control Panel", self)
+        show_action.triggered.connect(self.show_control_panel)
+        menu.addAction(show_action)
+        menu.addSeparator()
+
+        privacy_on = QAction("Privacy On", self)
+        privacy_on.triggered.connect(
+            lambda: self.set_tracking_mode("privacy")
+        )
+        menu.addAction(privacy_on)
+
+        privacy_off = QAction("Privacy Off", self)
+        privacy_off.triggered.connect(
+            lambda: self.set_tracking_mode("idle")
+        )
+        menu.addAction(privacy_off)
+
+        self.tray_camera_action = QAction("Turn Camera Off", self)
+        self.tray_camera_action.triggered.connect(self.toggle_camera)
+        menu.addAction(self.tray_camera_action)
+        menu.addSeparator()
+
+        quit_action = QAction("Quit EMEET PIXY Control", self)
+        quit_action.triggered.connect(self.quit_application)
+        menu.addAction(quit_action)
+
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(self.tray_activated)
+        self.tray.show()
+
+    def show_control_panel(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            if self.isVisible():
+                self.hide()
+            else:
+                self.show_control_panel()
+
+    def quit_application(self):
+        self.quitting = True
+        self.close()
+
+    def toggle_camera(self):
+        self.set_camera_enabled(not self.camera_enabled)
+        if self.tray_camera_action is not None:
+            self.tray_camera_action.setText(
+                "Turn Camera Off"
+                if self.camera_enabled
+                else "Turn Camera On"
+            )
+
+    def set_camera_enabled(self, enabled):
+        if enabled:
+            mode = camera_toggle_tracking_mode(
+                True,
+                self.settings.value("camera/tracking", "idle"),
+                self.settings.value("app/default_tracking", "idle"),
+            )
+            if self.backend(mode) is None:
+                return
+
+            self.camera_enabled = True
+            self.camera_override_tracking = mode
+            self.video_widget.show()
+            self.released_panel.hide()
+            self.preview_button.setEnabled(True)
+            self.camera_toggle_button.setText("Turn Camera Off")
+            self.preview_status.setText("Starting live preview...")
+            self.start_camera()
+            QTimer.singleShot(500, self.restore_camera_state)
+        else:
+            if self.virtual_active or self.virtual_process is not None:
+                self.message.setText(
+                    "Stop the virtual camera before disabling preview"
+                )
+                return
+
+            self.camera_enabled = False
+            self.camera_override_tracking = camera_toggle_tracking_mode(False)
+            self.backend(self.camera_override_tracking)
+            self.stop_camera()
+            self.video_widget.hide()
+            self.released_panel.setText(
+                "<b>CAMERA PREVIEW DISABLED</b><br><br>"
+                "Turn the camera on to view the live stream."
+            )
+            self.released_panel.show()
+            self.preview_button.setEnabled(False)
+            self.camera_toggle_button.setText("Turn Camera On")
+            self.preview_status.setText("Preview disabled")
+            self.message.setText("Camera preview disabled")
+
+        self.settings.setValue("camera/enabled", self.camera_enabled)
+        self.settings.sync()
 
     def find_pixy_camera(self):
         for device in QMediaDevices.videoInputs():
@@ -481,9 +974,14 @@ class PixyGUI(QMainWindow):
 
         self.update_resolution_info()
 
+        if self.virtual_active:
+            self.stop_virtual_camera(False)
+            self.start_virtual_camera()
+            return
+
         # Re-open the camera with the newly selected format,
         # unless another application currently owns the stream.
-        if not self.preview_released:
+        if not self.preview_released and self.camera_enabled:
             self.stop_camera()
             self.start_camera()
 
@@ -493,6 +991,9 @@ class PixyGUI(QMainWindow):
             )
 
     def start_camera(self):
+        if self.virtual_active or self.virtual_process is not None:
+            return
+
         device = self.find_pixy_camera()
 
         if device is None:
@@ -572,8 +1073,12 @@ class PixyGUI(QMainWindow):
                 "Camera available to other applications"
             )
 
+            self.compact_preview_layout()
+
         else:
             self.preview_released = False
+
+            self.restore_preview_layout()
 
             self.released_panel.hide()
             self.video_widget.show()
@@ -599,6 +1104,29 @@ class PixyGUI(QMainWindow):
                 "Preview resumed"
             )
 
+    def compact_preview_layout(self):
+        if self.preview_compact:
+            return
+
+        self.preview_compact = True
+        self.full_window_size = self.size()
+        self.preview_box.hide()
+        self.preview_restore_button.show()
+        self.resize(min(self.width(), 650), self.height())
+
+    def restore_preview_layout(self):
+        if not self.preview_compact:
+            return
+
+        self.preview_compact = False
+        self.preview_box.show()
+        self.preview_restore_button.hide()
+        self.body_splitter.setSizes([700, 430])
+
+        if self.full_window_size is not None:
+            self.resize(self.full_window_size)
+            self.full_window_size = None
+
     def restart_camera(self):
         self.preview_status.setText("Restarting preview...")
         self.stop_camera()
@@ -618,6 +1146,24 @@ class PixyGUI(QMainWindow):
     # --------------------------------------------------
     # VIRTUAL CAMERA
     # --------------------------------------------------
+
+    def start_background_virtual_camera(self):
+        if not should_autostart_virtual_camera(
+            self.start_minimized,
+            bool(self.default_virtual_camera.currentData()),
+        ):
+            return
+
+        if self.virtual_active or self.virtual_process is not None:
+            return
+
+        self.start_virtual_camera()
+
+        if not self.virtual_active:
+            QTimer.singleShot(
+                3000,
+                self.start_background_virtual_camera,
+            )
 
     def find_virtual_camera_device(self):
         """
@@ -664,6 +1210,23 @@ class PixyGUI(QMainWindow):
                 "Device: Missing"
             )
             self.virtual_start.setEnabled(False)
+
+        self.update_resolution_control_state()
+
+    def update_resolution_control_state(self):
+        if self.virtual_active:
+            self.resolution.setEnabled(True)
+            self.resolution.setToolTip(
+                "Changing resolution restarts the virtual-camera pipeline"
+            )
+            return
+
+        if self.virtual_starting or self.preview_released:
+            self.resolution.setEnabled(False)
+            return
+
+        self.resolution.setEnabled(True)
+        self.resolution.setToolTip("")
 
 
     def find_pixy_video_device(self):
@@ -720,12 +1283,32 @@ class PixyGUI(QMainWindow):
 
 
     def start_virtual_camera(self):
-        if self.virtual_active:
+        if self.virtual_active or self.virtual_starting:
             return
+
+        self.virtual_starting = True
+        self.resolution.setEnabled(True)
+        self.resolution.setToolTip(
+            "Changing resolution restarts the virtual-camera pipeline"
+        )
+
+        if not self.virtual_lock.tryLock(0):
+            self.virtual_starting = False
+            self.message.setText(
+                "Virtual camera is already running in another app window"
+            )
+            self.virtual_status.setText(
+                "Pipeline: Already running"
+            )
+            return
+
+        self.virtual_lock_held = True
 
         virtual_device = self.find_virtual_camera_device()
 
         if virtual_device is None:
+            self.virtual_starting = False
+            self.release_virtual_lock()
             self.message.setText(
                 "EMEET PIXY Virtual Camera is not available"
             )
@@ -738,6 +1321,8 @@ class PixyGUI(QMainWindow):
         physical_device = self.find_pixy_video_device()
 
         if physical_device is None:
+            self.virtual_starting = False
+            self.release_virtual_lock()
             self.message.setText(
                 "EMEET PIXY capture device not found"
             )
@@ -763,6 +1348,7 @@ class PixyGUI(QMainWindow):
         self.preview_before_virtual = (
             not self.preview_released
         )
+        self.camera_before_virtual = self.camera_enabled
 
         # Qt must release the physical stream before FFmpeg opens it.
         self.stop_camera()
@@ -786,7 +1372,6 @@ class PixyGUI(QMainWindow):
         )
 
         self.preview_button.setEnabled(False)
-        self.resolution.setEnabled(False)
 
         self.virtual_start.setEnabled(False)
         self.virtual_stop.setEnabled(True)
@@ -821,11 +1406,15 @@ class PixyGUI(QMainWindow):
         height,
     ):
         if self.virtual_process is not None:
+            self.virtual_starting = False
+            self.release_virtual_lock()
             return
 
         process = QProcess(self)
 
         if not FFMPEG:
+            self.virtual_starting = False
+            self.release_virtual_lock()
             self.virtual_status.setText("Pipeline: FFmpeg missing")
             self.message.setText("FFmpeg is required for Virtual Camera mode")
             self.restore_after_virtual_camera()
@@ -880,6 +1469,8 @@ class PixyGUI(QMainWindow):
             error = process.errorString()
 
             self.virtual_process = None
+            self.virtual_starting = False
+            self.release_virtual_lock()
 
             self.virtual_status.setText(
                 "Pipeline: Failed to start"
@@ -894,10 +1485,13 @@ class PixyGUI(QMainWindow):
             return
 
         self.virtual_active = True
+        self.virtual_starting = False
 
         self.virtual_status.setText(
             f"Pipeline: Running — {width} × {height} @ 30 fps"
         )
+
+        self.update_resolution_control_state()
 
         self.preview_status.setText(
             "Virtual output active"
@@ -936,6 +1530,8 @@ class PixyGUI(QMainWindow):
         self.virtual_process = None
         self.virtual_active = False
         self.virtual_stopping = False
+        self.virtual_starting = False
+        self.release_virtual_lock()
 
         self.virtual_status.setText("Pipeline: Stopped")
 
@@ -959,6 +1555,8 @@ class PixyGUI(QMainWindow):
 
         self.virtual_process = None
         self.virtual_active = False
+        self.virtual_starting = False
+        self.release_virtual_lock()
 
         self.virtual_status.setText(
             f"Pipeline: Stopped unexpectedly ({exit_code})"
@@ -976,6 +1574,10 @@ class PixyGUI(QMainWindow):
 
     def restore_after_virtual_camera(self):
         self.preview_button.setEnabled(True)
+
+        if not self.camera_before_virtual:
+            self.set_camera_enabled(False)
+            return
 
         if self.preview_before_virtual:
             self.preview_released = False
@@ -1028,6 +1630,13 @@ class PixyGUI(QMainWindow):
 
             self.resolution.setEnabled(False)
             self.zoom.setEnabled(False)
+
+    def release_virtual_lock(self):
+        if not self.virtual_lock_held:
+            return
+
+        self.virtual_lock.unlock()
+        self.virtual_lock_held = False
 
 
     # --------------------------------------------------
@@ -1150,6 +1759,111 @@ class PixyGUI(QMainWindow):
         if index >= 0:
             self.flicker.setCurrentIndex(index)
 
+        default_tracking = normalize_choice(
+            self.settings.value("app/default_tracking", "idle"),
+            ("idle", "track"),
+            "idle",
+        )
+        index = self.default_tracking.findData(default_tracking)
+        if index >= 0:
+            self.default_tracking.setCurrentIndex(index)
+
+        self.camera_enabled = self.bool_setting(
+            "app/default_camera",
+            self.bool_setting("camera/enabled", True),
+        )
+        index = self.default_camera.findData(self.camera_enabled)
+        if index >= 0:
+            self.default_camera.setCurrentIndex(index)
+
+        if self.tray_camera_action is not None:
+            self.tray_camera_action.setText(
+                "Turn Camera Off"
+                if self.camera_enabled
+                else "Turn Camera On"
+            )
+
+        default_virtual_camera = self.bool_setting(
+            "app/default_virtual_camera", True
+        )
+        index = self.default_virtual_camera.findData(default_virtual_camera)
+        if index >= 0:
+            self.default_virtual_camera.setCurrentIndex(index)
+
+        default_privacy = self.bool_setting(
+            "app/default_privacy", False
+        )
+        index = self.default_privacy.findData(default_privacy)
+        if index >= 0:
+            self.default_privacy.setCurrentIndex(index)
+
+        default_gesture = self.bool_setting(
+            "app/default_gesture", False
+        )
+        index = self.default_gesture.findData(default_gesture)
+        if index >= 0:
+            self.default_gesture.setCurrentIndex(index)
+
+        default_audio = normalize_choice(
+            self.settings.value("app/default_audio", "nc"),
+            ("nc", "live", "org"),
+            "nc",
+        )
+        index = self.default_audio.findData(default_audio)
+        if index >= 0:
+            self.default_audio.setCurrentIndex(index)
+
+        default_flicker = normalize_choice(
+            self.settings.value("app/default_flicker", "60"),
+            ("off", "50", "60"),
+            "60",
+        )
+        index = self.default_flicker.findData(default_flicker)
+        if index >= 0:
+            self.default_flicker.setCurrentIndex(index)
+
+    def apply_default_settings(self):
+        self.settings.setValue(
+            "app/default_tracking",
+            self.default_tracking.currentData() or "idle",
+        )
+        self.settings.setValue(
+            "app/default_camera",
+            bool(self.default_camera.currentData()),
+        )
+        self.settings.setValue(
+            "app/default_virtual_camera",
+            bool(self.default_virtual_camera.currentData()),
+        )
+        self.settings.setValue(
+            "app/default_privacy",
+            bool(self.default_privacy.currentData()),
+        )
+        self.settings.setValue(
+            "app/default_gesture",
+            bool(self.default_gesture.currentData()),
+        )
+        self.settings.setValue(
+            "app/default_audio",
+            self.default_audio.currentData() or "nc",
+        )
+        self.settings.setValue(
+            "app/default_flicker",
+            self.default_flicker.currentData() or "60",
+        )
+        self.settings.sync()
+        self.message.setText("Startup defaults saved")
+
+    def reset_default_settings(self):
+        self.default_tracking.setCurrentIndex(0)
+        self.default_camera.setCurrentIndex(1)
+        self.default_virtual_camera.setCurrentIndex(1)
+        self.default_privacy.setCurrentIndex(0)
+        self.default_gesture.setCurrentIndex(0)
+        self.default_audio.setCurrentIndex(0)
+        self.default_flicker.setCurrentIndex(0)
+        self.apply_default_settings()
+
     def restore_camera_state(self):
         if self.restoring:
             return
@@ -1167,20 +1881,35 @@ class PixyGUI(QMainWindow):
                 self.settings.value("camera/zoom", 100)
             )
 
-            tracking = str(
-                self.settings.value("camera/tracking", "idle")
-            )
+            tracking = self.camera_override_tracking
+            if tracking is None:
+                tracking = resolve_startup_tracking(
+                    self.settings.value("camera/tracking", "idle"),
+                    self.settings.value("app/default_tracking", "idle"),
+                    self.bool_setting("app/default_privacy", False),
+                )
 
             gesture = self.bool_setting(
-                "camera/gesture", False
+                "camera/gesture",
+                self.bool_setting("app/default_gesture", False),
             )
 
-            audio = str(
-                self.settings.value("camera/audio", "nc")
+            audio = normalize_choice(
+                self.settings.value(
+                    "camera/audio",
+                    self.settings.value("app/default_audio", "nc"),
+                ),
+                ("nc", "live", "org"),
+                "nc",
             )
 
-            flicker = str(
-                self.settings.value("camera/flicker", "60")
+            flicker = normalize_choice(
+                self.settings.value(
+                    "camera/flicker",
+                    self.settings.value("app/default_flicker", "60"),
+                ),
+                ("off", "50", "60"),
+                "60",
             )
 
             pan = max(-150, min(150, pan))
@@ -1195,6 +1924,8 @@ class PixyGUI(QMainWindow):
 
             if tracking in ("idle", "track", "privacy"):
                 self.backend(tracking)
+                if self.camera_override_tracking == tracking:
+                    self.camera_override_tracking = None
 
             self.backend(
                 "gesture-on" if gesture else "gesture-off"
@@ -1283,6 +2014,11 @@ class PixyGUI(QMainWindow):
     # --------------------------------------------------
 
     def closeEvent(self, event):
+        if not self.quitting and self.tray is not None:
+            self.hide()
+            event.ignore()
+            return
+
         self.refresh_status(save=True)
 
         self.settings.setValue(
@@ -1300,11 +2036,45 @@ class PixyGUI(QMainWindow):
         event.accept()
 
 
-def main():
-    app = QApplication(sys.argv)
+def build_parser():
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument(
+        "--background",
+        action="store_true",
+        help="Start quietly for boot/login autostart.",
+    )
+    parser.add_argument(
+        "--foreground",
+        action="store_true",
+        help="Start with the visible preview window for testing and manual use.",
+    )
+    return parser
 
-    window = PixyGUI()
-    window.show()
+
+def main(argv=None):
+    parser = build_parser()
+    args, remaining = parser.parse_known_args(argv)
+
+    app = QApplication([sys.argv[0], *remaining])
+    app.setStyleSheet(APP_STYLESHEET)
+
+    if not args.background and background_service_is_active():
+        QMessageBox.warning(
+            None,
+            "EMEET PIXY Control is already running",
+            "The background control app is already active.\n\n"
+            "Use its system-tray icon to open the control panel, or quit "
+            "the existing instance before starting another one.",
+        )
+        return 1
+
+    background_mode = args.background and not args.foreground
+    window = PixyGUI(start_minimized=background_mode)
+
+    if background_mode:
+        window.hide()
+    else:
+        window.show()
 
     sys.exit(app.exec())
 
