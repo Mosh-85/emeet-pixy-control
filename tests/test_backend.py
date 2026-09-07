@@ -78,13 +78,17 @@ class PrivacyToggleScriptTest(unittest.TestCase):
             tmp_path = Path(tmp)
             bin_dir = tmp_path / "bin"
             state_root = tmp_path / "state"
+            command_log = tmp_path / "commands.log"
             bin_dir.mkdir()
             state_root.mkdir()
 
             backend = bin_dir / "emeet-pixy-cli"
             backend.write_text(
                 "#!/usr/bin/env bash\n"
-                "if [[ \"$1\" == \"privacy\" ]]; then\n"
+                "printf '%s\n' \"$*\" >> \"$EMEET_TEST_LOG\"\n"
+                "if [[ \"$1\" == \"status\" ]]; then\n"
+                "  printf 'Device: /dev/video0\\npan:  12 deg\\ntilt: -8 deg\\nzoom: 120\\n'\n"
+                "elif [[ \"$1\" == \"privacy\" ]]; then\n"
                 "  echo privacy\n"
                 "else\n"
                 "  echo idle\n"
@@ -96,6 +100,7 @@ class PrivacyToggleScriptTest(unittest.TestCase):
             env["HOME"] = str(tmp_path)
             env["XDG_STATE_HOME"] = str(state_root)
             env["EMEET_PIXY_VENV_BIN"] = str(bin_dir)
+            env["EMEET_TEST_LOG"] = str(command_log)
 
             script = ROOT / "deploy" / "emeet-pixy-privacy-toggle"
             subprocess.run(["bash", str(script), "toggle"], env=env, check=True)
@@ -103,6 +108,28 @@ class PrivacyToggleScriptTest(unittest.TestCase):
             state_file = state_root / "emeet-pixy-control" / "privacy-state"
             self.assertTrue(state_file.exists())
             self.assertEqual(state_file.read_text().strip(), "on")
+
+            subprocess.run(["bash", str(script), "toggle"], env=env, check=True)
+            commands = command_log.read_text()
+            self.assertIn("pan 12", commands)
+            self.assertIn("tilt -8", commands)
+            self.assertIn("zoom 120", commands)
+
+            subprocess.run(
+                ["bash", str(script), "tracking-toggle"],
+                env=env,
+                check=True,
+            )
+            tracking_state = state_root / "emeet-pixy-control" / "tracking-state"
+            self.assertEqual(tracking_state.read_text().strip(), "on")
+            self.assertEqual(state_file.read_text().strip(), "off")
+
+            subprocess.run(
+                ["bash", str(script), "tracking-toggle"],
+                env=env,
+                check=True,
+            )
+            self.assertEqual(tracking_state.read_text().strip(), "off")
 
 
 class GuiStartupModeTest(unittest.TestCase):
@@ -124,9 +151,9 @@ class GuiStartupModeTest(unittest.TestCase):
 
         self.assertFalse(camera_enabled)
 
-    def test_virtual_camera_autostarts_only_in_background(self):
+    def test_virtual_camera_autostarts_when_configured(self):
         self.assertTrue(should_autostart_virtual_camera(True, True))
-        self.assertFalse(should_autostart_virtual_camera(False, True))
+        self.assertTrue(should_autostart_virtual_camera(False, True))
         self.assertFalse(should_autostart_virtual_camera(True, False))
 
 

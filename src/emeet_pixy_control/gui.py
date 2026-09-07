@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import os
 import sys
 import subprocess
 import shutil
@@ -8,7 +9,7 @@ from pathlib import Path
 
 from emeet_pixy_control import __version__
 
-from PySide6.QtCore import QLockFile, Qt, QSettings, QTimer, QProcess
+from PySide6.QtCore import QEvent, QLockFile, Qt, QSettings, QTimer, QProcess
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtMultimedia import QCamera, QMediaCaptureSession, QMediaDevices
 from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -115,6 +116,11 @@ QPushButton#dangerButton {
 }
 
 QPushButton#privacyButton {
+    background: #263842;
+    border-color: #405761;
+}
+
+QPushButton#privacyButton:checked {
     background: #5b3e2c;
     border-color: #d19a5b;
 }
@@ -237,7 +243,7 @@ def camera_toggle_tracking_mode(
 
 
 def should_autostart_virtual_camera(background_mode, configured):
-    return background_mode and configured
+    return configured
 
 
 def background_service_is_active():
@@ -256,7 +262,10 @@ class PixyGUI(QMainWindow):
         self.start_minimized = start_minimized
         self.quitting = False
         self.tray = None
-        self.tray_camera_action = None
+        self.panel_toggle_action = None
+        self.privacy_toggle_action = None
+        self.tracking_on_action = None
+        self.tracking_off_action = None
 
         self.settings = QSettings("emeet-pixy", "control")
         self.camera = None
@@ -266,6 +275,7 @@ class PixyGUI(QMainWindow):
         self.preview_released = False
 
         self.virtual_process = None
+        self.virtual_external_pid = None
         self.virtual_active = False
         self.virtual_stopping = False
         self.virtual_starting = False
@@ -338,16 +348,9 @@ class PixyGUI(QMainWindow):
         self.preview_restore_button.clicked.connect(self.toggle_preview)
         self.preview_restore_button.hide()
 
-        self.camera_toggle_button = QPushButton("Turn Camera Off")
-        self.camera_toggle_button.clicked.connect(self.toggle_camera)
-        self.camera_toggle_button.setToolTip(
-            "Enable or disable the physical camera stream"
-        )
-
         header.addWidget(title)
         header.addStretch()
         header.addWidget(self.preview_restore_button)
-        header.addWidget(self.camera_toggle_button)
         main.addLayout(header)
 
         status_panel = QFrame()
@@ -482,17 +485,21 @@ class PixyGUI(QMainWindow):
         tracking_box = QGroupBox("Face Tracking")
         tracking = QGridLayout(tracking_box)
 
-        track = QPushButton("Tracking ON")
-        idle = QPushButton("Tracking OFF")
-        privacy = QPushButton("Privacy Mode")
+        tracking_on = QPushButton("Tracking ON")
+        tracking_off = QPushButton("Tracking OFF")
+        self.tracking_on_button = tracking_on
+        self.tracking_off_button = tracking_off
+        privacy = QPushButton("Camera: Off")
         privacy.setObjectName("privacyButton")
+        privacy.setCheckable(True)
+        self.privacy_button = privacy
 
-        track.clicked.connect(lambda: self.set_tracking_mode("track"))
-        idle.clicked.connect(lambda: self.set_tracking_mode("idle"))
-        privacy.clicked.connect(lambda: self.set_tracking_mode("privacy"))
+        tracking_on.clicked.connect(lambda: self.set_tracking_mode("track"))
+        tracking_off.clicked.connect(lambda: self.set_tracking_mode("idle"))
+        privacy.clicked.connect(self.toggle_privacy)
 
-        tracking.addWidget(track, 0, 0)
-        tracking.addWidget(idle, 0, 1)
+        tracking.addWidget(tracking_on, 0, 0)
+        tracking.addWidget(tracking_off, 0, 1)
         tracking.addWidget(privacy, 1, 0, 1, 2)
 
         controls.addWidget(tracking_box)
@@ -544,75 +551,6 @@ class PixyGUI(QMainWindow):
         flicker_layout.addWidget(flicker_apply)
 
         controls.addWidget(flicker_box)
-
-        # Startup defaults
-        defaults_box = QGroupBox("Startup Defaults")
-        defaults_layout = QVBoxLayout(defaults_box)
-
-        defaults_title = QLabel("Choose what the camera should do when the app opens.")
-        defaults_title.setWordWrap(True)
-        defaults_title.setStyleSheet("QLabel { color: palette(mid); }")
-
-        self.default_tracking = QComboBox()
-        self.default_tracking.addItem("Tracking OFF", "idle")
-        self.default_tracking.addItem("Tracking ON", "track")
-
-        self.default_camera = QComboBox()
-        self.default_camera.addItem("Camera preview at startup: OFF", False)
-        self.default_camera.addItem("Camera preview at startup: ON", True)
-
-        self.default_virtual_camera = QComboBox()
-        self.default_virtual_camera.addItem(
-            "Virtual camera at startup: OFF", False
-        )
-        self.default_virtual_camera.addItem(
-            "Virtual camera at startup: ON", True
-        )
-
-        self.default_privacy = QComboBox()
-        self.default_privacy.addItem("Privacy at startup: OFF", False)
-        self.default_privacy.addItem("Privacy at startup: ON", True)
-
-        self.default_gesture = QComboBox()
-        self.default_gesture.addItem("Gesture OFF", False)
-        self.default_gesture.addItem("Gesture ON", True)
-
-        self.default_audio = QComboBox()
-        self.default_audio.addItem("Noise Cancel", "nc")
-        self.default_audio.addItem("Live", "live")
-        self.default_audio.addItem("Original", "org")
-
-        self.default_flicker = QComboBox()
-        self.default_flicker.addItem("60 Hz", "60")
-        self.default_flicker.addItem("50 Hz", "50")
-        self.default_flicker.addItem("Off", "off")
-
-        defaults_row = QHBoxLayout()
-        defaults_apply = QPushButton("Save Defaults")
-        defaults_apply.clicked.connect(self.apply_default_settings)
-        defaults_reset = QPushButton("Reset")
-        defaults_reset.clicked.connect(self.reset_default_settings)
-        defaults_row.addWidget(defaults_apply)
-        defaults_row.addWidget(defaults_reset)
-
-        defaults_note = QLabel(
-            "Saved immediately, and also persisted when the app closes."
-        )
-        defaults_note.setWordWrap(True)
-        defaults_note.setStyleSheet("QLabel { color: palette(mid); }")
-
-        defaults_layout.addWidget(defaults_title)
-        defaults_layout.addWidget(self.default_tracking)
-        defaults_layout.addWidget(self.default_camera)
-        defaults_layout.addWidget(self.default_virtual_camera)
-        defaults_layout.addWidget(self.default_privacy)
-        defaults_layout.addWidget(self.default_gesture)
-        defaults_layout.addWidget(self.default_audio)
-        defaults_layout.addWidget(self.default_flicker)
-        defaults_layout.addLayout(defaults_row)
-        defaults_layout.addWidget(defaults_note)
-
-        controls.addWidget(defaults_box)
 
         # Virtual Camera
         virtual_box = QGroupBox("Virtual Camera")
@@ -686,6 +624,7 @@ class PixyGUI(QMainWindow):
 
         main.addWidget(self.body_splitter, 1)
 
+        self.protect_setting_controls_from_wheel()
         self.setup_tray()
 
         self.load_saved_ui_state()
@@ -696,7 +635,22 @@ class PixyGUI(QMainWindow):
         if self.start_minimized:
             self.camera_enabled = False
 
-        if self.camera_enabled:
+        privacy_startup = self.bool_setting(
+            "camera/privacy_enabled",
+            True,
+        )
+
+        if privacy_startup:
+            self.backend("privacy")
+            self.video_widget.hide()
+            self.released_panel.setText(
+                "<b>PRIVACY MODE ACTIVE</b><br><br>"
+                "The camera stream is hidden until privacy is turned off."
+            )
+            self.released_panel.show()
+            self.preview_button.setEnabled(False)
+            self.preview_status.setText("Privacy active — preview hidden")
+        elif self.camera_enabled:
             self.start_camera()
         else:
             self.set_camera_enabled(False)
@@ -712,7 +666,7 @@ class PixyGUI(QMainWindow):
 
         if should_autostart_virtual_camera(
             self.start_minimized,
-            bool(self.default_virtual_camera.currentData()),
+            self.bool_setting("virtual/autostart", True),
         ):
             QTimer.singleShot(
                 1500,
@@ -729,6 +683,20 @@ class PixyGUI(QMainWindow):
     # CAMERA PREVIEW
     # --------------------------------------------------
 
+    def protect_setting_controls_from_wheel(self):
+        for control in self.findChildren(QSlider):
+            control.installEventFilter(self)
+        for control in self.findChildren(QComboBox):
+            control.installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        if (
+            event.type() == QEvent.Type.Wheel
+            and isinstance(watched, (QSlider, QComboBox))
+        ):
+            return True
+        return super().eventFilter(watched, event)
+
     def setup_tray(self):
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
@@ -739,27 +707,34 @@ class PixyGUI(QMainWindow):
 
         menu = QMenu()
 
-        show_action = QAction("Show Control Panel", self)
-        show_action.triggered.connect(self.show_control_panel)
-        menu.addAction(show_action)
+        self.panel_toggle_action = QAction("Show Control Panel", self)
+        self.panel_toggle_action.triggered.connect(
+            self.toggle_control_panel
+        )
+        menu.addAction(self.panel_toggle_action)
         menu.addSeparator()
 
-        privacy_on = QAction("Privacy On", self)
-        privacy_on.triggered.connect(
-            lambda: self.set_tracking_mode("privacy")
+        privacy_enabled = self.bool_setting("camera/privacy_enabled", False)
+        self.privacy_toggle_action = QAction(self)
+        self.privacy_toggle_action.setCheckable(True)
+        self.privacy_toggle_action.setChecked(privacy_enabled)
+        self.update_privacy_toggle_action(privacy_enabled)
+        self.privacy_toggle_action.triggered.connect(
+            self.toggle_privacy
         )
-        menu.addAction(privacy_on)
+        menu.addAction(self.privacy_toggle_action)
 
-        privacy_off = QAction("Privacy Off", self)
-        privacy_off.triggered.connect(
+        self.tracking_on_action = QAction("Tracking On", self)
+        self.tracking_on_action.triggered.connect(
+            lambda: self.set_tracking_mode("track")
+        )
+        menu.addAction(self.tracking_on_action)
+
+        self.tracking_off_action = QAction("Tracking Off", self)
+        self.tracking_off_action.triggered.connect(
             lambda: self.set_tracking_mode("idle")
         )
-        menu.addAction(privacy_off)
-
-        self.tray_camera_action = QAction("Turn Camera Off", self)
-        self.tray_camera_action.triggered.connect(self.toggle_camera)
-        menu.addAction(self.tray_camera_action)
-        menu.addSeparator()
+        menu.addAction(self.tracking_off_action)
 
         quit_action = QAction("Quit EMEET PIXY Control", self)
         quit_action.triggered.connect(self.quit_application)
@@ -773,33 +748,33 @@ class PixyGUI(QMainWindow):
         self.showNormal()
         self.raise_()
         self.activateWindow()
+        if self.panel_toggle_action is not None:
+            self.panel_toggle_action.setText("Hide Control Panel")
+
+    def toggle_control_panel(self):
+        if self.isVisible():
+            self.hide()
+            if self.panel_toggle_action is not None:
+                self.panel_toggle_action.setText("Show Control Panel")
+        else:
+            self.show_control_panel()
 
     def tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            if self.isVisible():
-                self.hide()
-            else:
-                self.show_control_panel()
+            self.toggle_privacy(
+                not self.bool_setting("camera/privacy_enabled", False)
+            )
 
     def quit_application(self):
         self.quitting = True
         self.close()
-
-    def toggle_camera(self):
-        self.set_camera_enabled(not self.camera_enabled)
-        if self.tray_camera_action is not None:
-            self.tray_camera_action.setText(
-                "Turn Camera Off"
-                if self.camera_enabled
-                else "Turn Camera On"
-            )
 
     def set_camera_enabled(self, enabled):
         if enabled:
             mode = camera_toggle_tracking_mode(
                 True,
                 self.settings.value("camera/tracking", "idle"),
-                self.settings.value("app/default_tracking", "idle"),
+                self.settings.value("camera/tracking", "idle"),
             )
             if self.backend(mode) is None:
                 return
@@ -809,7 +784,6 @@ class PixyGUI(QMainWindow):
             self.video_widget.show()
             self.released_panel.hide()
             self.preview_button.setEnabled(True)
-            self.camera_toggle_button.setText("Turn Camera Off")
             self.preview_status.setText("Starting live preview...")
             self.start_camera()
             QTimer.singleShot(500, self.restore_camera_state)
@@ -831,7 +805,6 @@ class PixyGUI(QMainWindow):
             )
             self.released_panel.show()
             self.preview_button.setEnabled(False)
-            self.camera_toggle_button.setText("Turn Camera On")
             self.preview_status.setText("Preview disabled")
             self.message.setText("Camera preview disabled")
 
@@ -1150,7 +1123,7 @@ class PixyGUI(QMainWindow):
     def start_background_virtual_camera(self):
         if not should_autostart_virtual_camera(
             self.start_minimized,
-            bool(self.default_virtual_camera.currentData()),
+            self.bool_setting("virtual/autostart", True),
         ):
             return
 
@@ -1202,6 +1175,32 @@ class PixyGUI(QMainWindow):
             self.virtual_device_status.setText(
                 f"Device: Ready — {device}"
             )
+            external_pid = self.find_virtual_pipeline_process(device)
+            if external_pid and self.virtual_process is None:
+                if not self.virtual_active:
+                    self.preview_before_virtual = not self.preview_released
+                    self.camera_before_virtual = self.camera_enabled
+                    self.stop_camera()
+                    self.compact_preview_layout()
+                    self.preview_restore_button.setEnabled(False)
+                    self.preview_button.setEnabled(False)
+                    self.preview_status.setText(
+                        "Virtual camera active — preview unavailable"
+                    )
+                    self.virtual_stop.setEnabled(True)
+                self.virtual_external_pid = external_pid
+                self.virtual_active = True
+                self.virtual_status.setText(
+                    "Pipeline: Running — existing FFmpeg process"
+                )
+            elif (
+                self.virtual_process is None
+                and self.virtual_external_pid is not None
+            ):
+                self.virtual_external_pid = None
+                self.virtual_active = False
+                self.virtual_status.setText("Pipeline: Stopped")
+                self.restore_after_virtual_camera()
             self.virtual_start.setEnabled(
                 not self.virtual_active and self.virtual_process is None
             )
@@ -1212,6 +1211,28 @@ class PixyGUI(QMainWindow):
             self.virtual_start.setEnabled(False)
 
         self.update_resolution_control_state()
+
+    def find_virtual_pipeline_process(self, virtual_device):
+        physical_device = self.find_pixy_video_device()
+        if physical_device is None:
+            return None
+
+        result = subprocess.run(
+            ["pgrep", "-af", "ffmpeg"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        for line in result.stdout.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            if physical_device in parts[1] and virtual_device in parts[1]:
+                try:
+                    return int(parts[0])
+                except ValueError:
+                    continue
+        return None
 
     def update_resolution_control_state(self):
         if self.virtual_active:
@@ -1353,19 +1374,8 @@ class PixyGUI(QMainWindow):
         # Qt must release the physical stream before FFmpeg opens it.
         self.stop_camera()
 
-        self.video_widget.hide()
-
-        self.released_panel.setText(
-            "<b>VIRTUAL CAMERA ACTIVE</b><br><br>"
-            "The physical EMEET PIXY is feeding "
-            "<b>EMEET PIXY Virtual Camera</b>.<br><br>"
-            "Select EMEET PIXY Virtual Camera in "
-            "Google Meet, OBS, Teams, or another application.<br><br>"
-            "Pan, tilt, tracking, and other camera controls "
-            "remain active."
-        )
-
-        self.released_panel.show()
+        self.compact_preview_layout()
+        self.preview_restore_button.setEnabled(False)
 
         self.preview_status.setText(
             "Starting virtual camera..."
@@ -1501,6 +1511,13 @@ class PixyGUI(QMainWindow):
             "EMEET PIXY Virtual Camera running"
         )
 
+        if self.bool_setting("camera/privacy_enabled", False):
+            # Opening the physical stream can wake the camera out of privacy.
+            QTimer.singleShot(
+                500,
+                lambda: self.backend("privacy"),
+            )
+
         # We know the exact resolution selected by FFmpeg,
         # so native zoom availability remains predictable.
         self.update_resolution_info()
@@ -1513,6 +1530,13 @@ class PixyGUI(QMainWindow):
         self.virtual_stopping = True
 
         process = self.virtual_process
+
+        if process is None and self.virtual_external_pid is not None:
+            subprocess.run(
+                ["kill", str(self.virtual_external_pid)],
+                check=False,
+            )
+            self.virtual_external_pid = None
 
         if process is not None:
             if (
@@ -1528,6 +1552,7 @@ class PixyGUI(QMainWindow):
             process.deleteLater()
 
         self.virtual_process = None
+        self.virtual_external_pid = None
         self.virtual_active = False
         self.virtual_stopping = False
         self.virtual_starting = False
@@ -1575,11 +1600,10 @@ class PixyGUI(QMainWindow):
     def restore_after_virtual_camera(self):
         self.preview_button.setEnabled(True)
 
-        if not self.camera_before_virtual:
-            self.set_camera_enabled(False)
-            return
-
         if self.preview_before_virtual:
+            self.camera_enabled = True
+            self.settings.setValue("camera/enabled", True)
+            self.restore_preview_layout()
             self.preview_released = False
 
             self.released_panel.hide()
@@ -1608,6 +1632,7 @@ class PixyGUI(QMainWindow):
         else:
             # Return to Direct/Release mode.
             self.preview_released = True
+            self.preview_restore_button.setEnabled(True)
 
             self.video_widget.hide()
 
@@ -1698,9 +1723,127 @@ class PixyGUI(QMainWindow):
     # FEATURE STATE
     # --------------------------------------------------
 
+    def privacy_state_path(self):
+        state_home = os.environ.get(
+            "XDG_STATE_HOME",
+            str(Path.home() / ".local" / "state"),
+        )
+        return Path(state_home) / "emeet-pixy-control" / "privacy-state"
+
+    def write_privacy_state(self, enabled):
+        path = self.privacy_state_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("on\n" if enabled else "off\n")
+        except OSError:
+            pass
+
+    def tracking_state_path(self):
+        return self.privacy_state_path().with_name("tracking-state")
+
+    def write_tracking_state(self, enabled):
+        path = self.tracking_state_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("on\n" if enabled else "off\n")
+        except OSError:
+            pass
+
     def set_tracking_mode(self, mode):
+        if mode not in ("idle", "track"):
+            return
+
+        self.settings.setValue("camera/tracking", mode)
+        self.write_tracking_state(mode == "track")
+
+        if self.bool_setting("camera/privacy_enabled", False):
+            self.update_tracking_toggle_action(mode == "track")
+            return
+
         if self.backend(mode) is not None:
-            self.settings.setValue("camera/tracking", mode)
+            self.update_tracking_toggle_action(mode == "track")
+
+    def set_privacy_mode(self, enabled):
+        if enabled:
+            status = self.backend("status")
+            if status:
+                privacy_position = {}
+                for line in status.splitlines():
+                    line = line.strip()
+                    for axis in ("pan", "tilt", "zoom"):
+                        if not line.startswith(f"{axis}:"):
+                            continue
+                        try:
+                            privacy_position[axis] = int(
+                                line.split(":", 1)[1]
+                                .strip()
+                                .split()[0]
+                            )
+                        except (ValueError, IndexError):
+                            pass
+                for axis, position in privacy_position.items():
+                    self.settings.setValue(
+                        f"camera/privacy_{axis}",
+                        position,
+                    )
+            if self.backend("privacy") is not None:
+                self.settings.setValue("camera/privacy_enabled", True)
+                self.write_privacy_state(True)
+        else:
+            tracking = normalize_choice(
+                self.settings.value("camera/tracking", "idle"),
+                ("idle", "track"),
+                "idle",
+            )
+            if self.backend(tracking) is None:
+                return
+            for axis in ("pan", "tilt", "zoom"):
+                saved_position = self.settings.value(
+                    f"camera/privacy_{axis}"
+                )
+                try:
+                    saved_position = int(saved_position)
+                except (TypeError, ValueError):
+                    saved_position = None
+                if saved_position is not None:
+                    self.backend(axis, saved_position)
+                    self.settings.setValue(
+                        f"camera/{axis}",
+                        saved_position,
+                    )
+            self.write_privacy_state(False)
+            self.settings.setValue("camera/privacy_enabled", False)
+            if not self.virtual_active and not self.preview_released:
+                self.camera_enabled = True
+                self.video_widget.show()
+                self.released_panel.hide()
+                self.preview_button.setEnabled(True)
+                self.preview_status.setText("Starting live preview...")
+                self.start_camera()
+                QTimer.singleShot(800, self.restore_camera_state)
+        self.update_privacy_toggle_action(enabled)
+
+    def update_privacy_toggle_action(self, enabled):
+        label = "Camera: On" if enabled else "Camera: Off"
+        if self.privacy_toggle_action is not None:
+            self.privacy_toggle_action.setChecked(enabled)
+            self.privacy_toggle_action.setText(label)
+        if self.privacy_button is not None:
+            self.privacy_button.setChecked(enabled)
+            self.privacy_button.setText(label)
+
+    def update_tracking_toggle_action(self, enabled):
+        if self.tracking_on_button is not None:
+            self.tracking_on_button.setEnabled(not enabled)
+        if self.tracking_off_button is not None:
+            self.tracking_off_button.setEnabled(enabled)
+        if self.tracking_on_action is not None:
+            self.tracking_on_action.setEnabled(not enabled)
+        if self.tracking_off_action is not None:
+            self.tracking_off_action.setEnabled(enabled)
+
+    def toggle_privacy(self, enabled):
+        self.set_privacy_mode(enabled)
 
     def set_gesture(self, enabled):
         command = "gesture-on" if enabled else "gesture-off"
@@ -1759,110 +1902,16 @@ class PixyGUI(QMainWindow):
         if index >= 0:
             self.flicker.setCurrentIndex(index)
 
-        default_tracking = normalize_choice(
-            self.settings.value("app/default_tracking", "idle"),
-            ("idle", "track"),
-            "idle",
-        )
-        index = self.default_tracking.findData(default_tracking)
-        if index >= 0:
-            self.default_tracking.setCurrentIndex(index)
-
         self.camera_enabled = self.bool_setting(
-            "app/default_camera",
-            self.bool_setting("camera/enabled", True),
+            "camera/enabled",
+            True,
         )
-        index = self.default_camera.findData(self.camera_enabled)
-        if index >= 0:
-            self.default_camera.setCurrentIndex(index)
-
-        if self.tray_camera_action is not None:
-            self.tray_camera_action.setText(
-                "Turn Camera Off"
-                if self.camera_enabled
-                else "Turn Camera On"
-            )
-
-        default_virtual_camera = self.bool_setting(
-            "app/default_virtual_camera", True
+        self.settings.setValue("camera/privacy_enabled", True)
+        self.write_privacy_state(True)
+        self.update_privacy_toggle_action(True)
+        self.update_tracking_toggle_action(
+            self.settings.value("camera/tracking", "idle") == "track"
         )
-        index = self.default_virtual_camera.findData(default_virtual_camera)
-        if index >= 0:
-            self.default_virtual_camera.setCurrentIndex(index)
-
-        default_privacy = self.bool_setting(
-            "app/default_privacy", False
-        )
-        index = self.default_privacy.findData(default_privacy)
-        if index >= 0:
-            self.default_privacy.setCurrentIndex(index)
-
-        default_gesture = self.bool_setting(
-            "app/default_gesture", False
-        )
-        index = self.default_gesture.findData(default_gesture)
-        if index >= 0:
-            self.default_gesture.setCurrentIndex(index)
-
-        default_audio = normalize_choice(
-            self.settings.value("app/default_audio", "nc"),
-            ("nc", "live", "org"),
-            "nc",
-        )
-        index = self.default_audio.findData(default_audio)
-        if index >= 0:
-            self.default_audio.setCurrentIndex(index)
-
-        default_flicker = normalize_choice(
-            self.settings.value("app/default_flicker", "60"),
-            ("off", "50", "60"),
-            "60",
-        )
-        index = self.default_flicker.findData(default_flicker)
-        if index >= 0:
-            self.default_flicker.setCurrentIndex(index)
-
-    def apply_default_settings(self):
-        self.settings.setValue(
-            "app/default_tracking",
-            self.default_tracking.currentData() or "idle",
-        )
-        self.settings.setValue(
-            "app/default_camera",
-            bool(self.default_camera.currentData()),
-        )
-        self.settings.setValue(
-            "app/default_virtual_camera",
-            bool(self.default_virtual_camera.currentData()),
-        )
-        self.settings.setValue(
-            "app/default_privacy",
-            bool(self.default_privacy.currentData()),
-        )
-        self.settings.setValue(
-            "app/default_gesture",
-            bool(self.default_gesture.currentData()),
-        )
-        self.settings.setValue(
-            "app/default_audio",
-            self.default_audio.currentData() or "nc",
-        )
-        self.settings.setValue(
-            "app/default_flicker",
-            self.default_flicker.currentData() or "60",
-        )
-        self.settings.sync()
-        self.message.setText("Startup defaults saved")
-
-    def reset_default_settings(self):
-        self.default_tracking.setCurrentIndex(0)
-        self.default_camera.setCurrentIndex(1)
-        self.default_virtual_camera.setCurrentIndex(1)
-        self.default_privacy.setCurrentIndex(0)
-        self.default_gesture.setCurrentIndex(0)
-        self.default_audio.setCurrentIndex(0)
-        self.default_flicker.setCurrentIndex(0)
-        self.apply_default_settings()
 
     def restore_camera_state(self):
         if self.restoring:
@@ -1883,31 +1932,28 @@ class PixyGUI(QMainWindow):
 
             tracking = self.camera_override_tracking
             if tracking is None:
-                tracking = resolve_startup_tracking(
-                    self.settings.value("camera/tracking", "idle"),
-                    self.settings.value("app/default_tracking", "idle"),
-                    self.bool_setting("app/default_privacy", False),
-                )
+                if self.bool_setting("camera/privacy_enabled", False):
+                    tracking = "privacy"
+                else:
+                    tracking = normalize_choice(
+                        self.settings.value("camera/tracking", "idle"),
+                        ("idle", "track"),
+                        "idle",
+                    )
 
             gesture = self.bool_setting(
                 "camera/gesture",
-                self.bool_setting("app/default_gesture", False),
+                False,
             )
 
             audio = normalize_choice(
-                self.settings.value(
-                    "camera/audio",
-                    self.settings.value("app/default_audio", "nc"),
-                ),
+                self.settings.value("camera/audio", "nc"),
                 ("nc", "live", "org"),
                 "nc",
             )
 
             flicker = normalize_choice(
-                self.settings.value(
-                    "camera/flicker",
-                    self.settings.value("app/default_flicker", "60"),
-                ),
+                self.settings.value("camera/flicker", "60"),
                 ("off", "50", "60"),
                 "60",
             )
@@ -1922,11 +1968,6 @@ class PixyGUI(QMainWindow):
             if self.zoom.isEnabled():
                 self.backend("zoom", zoom)
 
-            if tracking in ("idle", "track", "privacy"):
-                self.backend(tracking)
-                if self.camera_override_tracking == tracking:
-                    self.camera_override_tracking = None
-
             self.backend(
                 "gesture-on" if gesture else "gesture-off"
             )
@@ -1936,6 +1977,12 @@ class PixyGUI(QMainWindow):
 
             if flicker in ("off", "50", "60"):
                 self.backend("flicker", flicker)
+
+            # Apply privacy last: PIXY HID settings can wake the video path.
+            if tracking in ("idle", "track", "privacy"):
+                self.backend(tracking)
+                if self.camera_override_tracking == tracking:
+                    self.camera_override_tracking = None
 
             self.zoom.setValue(zoom)
             self.zoom_label.setText(str(zoom))
@@ -2016,6 +2063,8 @@ class PixyGUI(QMainWindow):
     def closeEvent(self, event):
         if not self.quitting and self.tray is not None:
             self.hide()
+            if self.panel_toggle_action is not None:
+                self.panel_toggle_action.setText("Show Control Panel")
             event.ignore()
             return
 

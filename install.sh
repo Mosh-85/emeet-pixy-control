@@ -64,11 +64,9 @@ sed "s#@EXEC@#$foreground_exec#g" "$ROOT/deploy/emeet-pixy-control.desktop.in" |
 chmod 0644 "$TEST_DESKTOP_FILE"
 
 rm -f "$BIN_DIR/emeet-pixy-privacy-toggle" \
-      "$BIN_DIR/emeet-pixy-privacy-on" \
-      "$BIN_DIR/emeet-pixy-privacy-off"
+    "$BIN_DIR/emeet-pixy-privacy-on" \
+    "$BIN_DIR/emeet-pixy-privacy-off"
 install -m 0755 "$ROOT/deploy/emeet-pixy-privacy-toggle" "$BIN_DIR/emeet-pixy-privacy-toggle"
-ln -sf "$BIN_DIR/emeet-pixy-privacy-toggle" "$BIN_DIR/emeet-pixy-privacy-on"
-ln -sf "$BIN_DIR/emeet-pixy-privacy-toggle" "$BIN_DIR/emeet-pixy-privacy-off"
 
 cat > "$USER_SERVICE_FILE" <<SERVICE
 [Unit]
@@ -132,8 +130,6 @@ Foreground testing launch: EMEET PIXY Control (Preview Test)
 Background autostart: enabled for your user session
 Quick privacy actions:
   $BIN_DIR/emeet-pixy-privacy-toggle
-  $BIN_DIR/emeet-pixy-privacy-on
-  $BIN_DIR/emeet-pixy-privacy-off
 CLI backend: $VENV/bin/emeet-pixy-cli
 
 If HID controls are denied, unplug/replug the PIXY once (or log out/in).

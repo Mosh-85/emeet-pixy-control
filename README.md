@@ -49,7 +49,8 @@ Tested setup (August 2026):
 - Resolution selector populated from the camera itself
 - Native PIXY zoom where supported by the active mode
 - Face tracking on/off
-- Privacy mode
+- Tracking ON/OFF controls in the GUI and tray
+- Privacy mode with pan, tilt, zoom, and tracking-state restoration
 - Gesture control on/off
 - Audio mode: Noise Cancel / Live / Original
 - 50 Hz / 60 Hz anti-flicker
@@ -60,6 +61,19 @@ Tested setup (August 2026):
 - Dynamic discovery of physical and virtual `/dev/video*` nodes
 - HID permissions handled by a targeted udev rule
 
+Virtual Camera starts automatically when the app launches. The app applies
+privacy before opening a preview and re-applies it after FFmpeg opens the
+physical camera, preventing the startup stream from becoming visible again.
+
+The GUI and installed Waybar helper expose separate tracking and privacy
+controls. Privacy does not permanently change the selected tracking state; when
+privacy is disabled, the camera returns to the latest tracking selection.
+
+The PIXY's proprietary HID protocol does not currently provide a readable
+tracking/privacy status. The app therefore displays the last state set through
+its own controls. A tracking or privacy change made directly with a camera
+gesture will not automatically update the GUI.
+
 ## Release Preview vs Virtual Camera
 
 Linux applications often cannot simultaneously open the same physical webcam stream.
@@ -68,11 +82,22 @@ Linux applications often cannot simultaneously open the same physical webcam str
 
 Use **Release Preview** when you want Google Meet, OBS, Teams, or another application to use the physical PIXY directly. The GUI releases the video stream but keeps PTZ/HID controls available.
 
+Release Preview and the in-app preview cannot run while the physical camera is
+being used by the Virtual Camera FFmpeg pipeline. Stopping Virtual Camera
+restores the in-app preview when the pipeline releases the device.
+
 ### Virtual Camera
 
 Use **Virtual Camera** when you want the PIXY stream republished through `v4l2loopback` as **EMEET PIXY Virtual Camera**. The GUI starts and stops the FFmpeg bridge; the virtual device itself is created persistently at boot.
 
+Virtual Camera starts automatically in both foreground and background launches.
+When it is active, the app hides the complete preview area because FFmpeg owns
+the physical camera stream.
+
 The service prefers `/dev/video20` but will choose another free device from `/dev/video20` through `/dev/video29`. The GUI discovers it by name, so it does not depend on a fixed device number.
+
+The GUI also detects an already-running FFmpeg process feeding the virtual
+device, so its pipeline status remains useful across app instances.
 
 ## Zoom behavior
 
@@ -130,6 +155,10 @@ The installer:
 4. installs a PIXY-only udev rule for HID access;
 5. installs and enables the persistent virtual-camera systemd service;
 6. adds the user to the `video` group if necessary.
+
+The installed user service starts the control app in background mode. The app
+then starts Virtual Camera automatically and applies privacy mode before and
+after the physical stream is opened.
 
 After installation, launch **EMEET PIXY Control** from your application menu.
 
@@ -193,6 +222,8 @@ Click **Release Preview**, then select the physical EMEET PIXY in the conferenci
 
 Or start **Virtual Camera** and select **EMEET PIXY Virtual Camera** instead.
 
+Stop **Virtual Camera** before using the in-app preview or Release Preview.
+
 ### `Permission denied` on `/dev/hidraw*`
 
 Verify the supplied udev rule is installed:
@@ -211,6 +242,12 @@ Check:
 systemctl status emeet-pixy-virtual-camera.service
 v4l2-ctl --list-devices
 ```
+
+### Tracking or privacy state changed with a gesture
+
+The PIXY does not expose a documented readable state for these proprietary HID
+modes. Use the app or the installed Waybar commands when the GUI state needs to
+match the selected mode.
 
 ### `modprobe: Module v4l2loopback not found`
 

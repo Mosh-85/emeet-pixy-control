@@ -6,6 +6,10 @@ VENV_BIN="${EMEET_PIXY_VENV_BIN:-$HOME/.local/share/emeet-pixy-control/venv/bin}
 STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
 STATE_DIR="$STATE_HOME/emeet-pixy-control"
 STATE_FILE="$STATE_DIR/privacy-state"
+TRACKING_STATE_FILE="$STATE_DIR/tracking-state"
+PAN_FILE="$STATE_DIR/privacy-pan"
+TILT_FILE="$STATE_DIR/privacy-tilt"
+ZOOM_FILE="$STATE_DIR/privacy-zoom"
 BACKEND="$VENV_BIN/emeet-pixy-cli"
 
 mkdir -p "$STATE_DIR"
@@ -20,30 +24,93 @@ if [[ -f "$STATE_FILE" ]]; then
     current_state=$(tr -d '\r\n' < "$STATE_FILE" || true)
 fi
 
+tracking_state="off"
+if [[ -f "$TRACKING_STATE_FILE" ]]; then
+    tracking_state=$(tr -d '\r\n' < "$TRACKING_STATE_FILE" || true)
+fi
+
+save_camera_position() {
+    local status
+    status=$("$BACKEND" status)
+    awk -F: '/^pan:/ {print $2}' <<< "$status" | awk '{print $1}' > "$PAN_FILE"
+    awk -F: '/^tilt:/ {print $2}' <<< "$status" | awk '{print $1}' > "$TILT_FILE"
+    awk -F: '/^zoom:/ {print $2}' <<< "$status" | awk '{print $1}' > "$ZOOM_FILE"
+}
+
+restore_camera_position() {
+    local value
+    if [[ -s "$PAN_FILE" ]]; then
+        value=$(tr -d '\r\n' < "$PAN_FILE")
+        "$BACKEND" pan "$value"
+    fi
+    if [[ -s "$TILT_FILE" ]]; then
+        value=$(tr -d '\r\n' < "$TILT_FILE")
+        "$BACKEND" tilt "$value"
+    fi
+    if [[ -s "$ZOOM_FILE" ]]; then
+        value=$(tr -d '\r\n' < "$ZOOM_FILE")
+        "$BACKEND" zoom "$value"
+    fi
+}
+
+enable_privacy() {
+    if [[ "$current_state" != "on" ]]; then
+        save_camera_position
+    fi
+    "$BACKEND" privacy
+    printf '%s\n' "on" > "$STATE_FILE"
+}
+
+disable_privacy() {
+    if [[ "$tracking_state" == "on" ]]; then
+        "$BACKEND" track
+    else
+        "$BACKEND" idle
+    fi
+    restore_camera_position
+    printf '%s\n' "off" > "$STATE_FILE"
+}
+
+enable_tracking() {
+    printf '%s\n' "on" > "$TRACKING_STATE_FILE"
+    if [[ "$current_state" != "on" ]]; then
+        "$BACKEND" track
+    fi
+}
+
+disable_tracking() {
+    printf '%s\n' "off" > "$TRACKING_STATE_FILE"
+    if [[ "$current_state" != "on" ]]; then
+        "$BACKEND" idle
+    fi
+}
+
 case "$ACTION" in
     on|privacy)
-        "$BACKEND" privacy
-        printf '%s\n' "on" > "$STATE_FILE"
+        enable_privacy
         ;;
     off|idle)
-        "$BACKEND" idle
-        printf '%s\n' "off" > "$STATE_FILE"
+        disable_privacy
         ;;
     track)
-        "$BACKEND" track
-        printf '%s\n' "off" > "$STATE_FILE"
+        enable_tracking
+        ;;
+    tracking-toggle)
+        if [[ "$tracking_state" == "on" ]]; then
+            disable_tracking
+        else
+            enable_tracking
+        fi
         ;;
     toggle)
         if [[ "$current_state" == "on" ]]; then
-            "$BACKEND" idle
-            printf '%s\n' "off" > "$STATE_FILE"
+            disable_privacy
         else
-            "$BACKEND" privacy
-            printf '%s\n' "on" > "$STATE_FILE"
+            enable_privacy
         fi
         ;;
     *)
-        echo "Usage: $(basename "$0") [on|off|toggle|track|privacy|idle]" >&2
+        echo "Usage: $(basename "$0") [on|off|toggle|track|tracking-toggle|privacy|idle]" >&2
         exit 2
         ;;
 esac

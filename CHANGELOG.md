@@ -3,11 +3,16 @@
 ## Unreleased - 2026-09-07
 
 - Added background service startup and foreground preview-test modes to separate quiet autostart from visible testing
-- Improved startup defaults for camera/privacy state so the app can launch with the last saved behavior
+- Virtual Camera now starts automatically in foreground and background launches
+- Privacy is applied before preview startup and re-applied after FFmpeg opens the camera
 - Added tray-based controls, duplicate-instance protection, and clearer status handling for background operation
-- Refined the UI with compact status/header layout, improved styling, and better visibility of the camera toggle in release-preview mode
+- Refined the UI with compact status/header layout, improved styling, wheel-safe settings controls, and clearer camera/tracking controls
 - Improved keyboard/desktop privacy shortcuts and install setup for persistent virtual-camera and background app launch
-- Fixed startup sync issues where the privacy toggle could appear out of sync with the saved configuration
+- Added independent tracking and privacy controls with Waybar support
+- Privacy mode now remembers and restores the latest pan, tilt, zoom, and tracking state
+- Removed the obsolete Startup Defaults panel; camera controls now use the latest saved settings
+- Improved virtual-camera ownership detection and restored the in-app preview after stopping the pipeline
+- Made tracking/privacy indicators static because the proprietary HID protocol does not expose readable state
 - Added installation support for user-level autostart and quick privacy toggles for Linux desktop environments
 
 ## 0.1.0 - 2026-08-24
