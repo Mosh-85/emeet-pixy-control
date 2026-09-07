@@ -1,4 +1,6 @@
 # EMEET PIXY Control for Linux
+This fork/branch is mainly for my own use, and do not really take other users in consideration. 
+I tested and made this version under Fedora 44 with hyprland and waybar. 
 
 Unofficial native Linux control panel for the **EMEET PIXY** webcam (`328f:00c0`).
 
