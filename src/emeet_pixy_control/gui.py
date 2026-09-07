@@ -15,7 +15,8 @@ from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QGridLayout, QGroupBox, QHBoxLayout,
     QLabel, QMainWindow, QPushButton, QSlider, QVBoxLayout, QWidget,
-    QScrollArea, QSplitter, QFrame, QMenu, QMessageBox, QSystemTrayIcon
+    QScrollArea, QSplitter, QFrame, QMenu, QMessageBox, QSystemTrayIcon,
+    QFileDialog
 )
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -240,6 +241,29 @@ def should_autostart_virtual_camera(background_mode, configured):
     return background_mode and configured
 
 
+def build_video_filter(
+    effect,
+    blur_strength=12,
+    background_path=None,
+    width=1280,
+    height=720,
+):
+    """Build the FFmpeg filter graph for the virtual-camera effect."""
+    if effect == "blur":
+        blur = max(1, min(int(blur_strength), 30))
+        return f"boxblur=luma_radius={blur}:luma_power=1,format=yuv420p"
+
+    if effect == "image" and background_path:
+        return (
+            f"[1:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black[background];"
+            "[0:v]colorkey=0x00ff00:0.20:0.08[foreground];"
+            "[background][foreground]overlay=shortest=1,format=yuv420p[v]"
+        )
+
+    return "format=yuv420p"
+
+
 def background_service_is_active():
     result = subprocess.run(
         ["systemctl", "--user", "is-active", "--quiet", "emeet-pixy-control.service"],
@@ -269,6 +293,9 @@ class PixyGUI(QMainWindow):
         self.virtual_active = False
         self.virtual_stopping = False
         self.virtual_starting = False
+        self.background_effect = "off"
+        self.background_blur_strength = 12
+        self.background_image = ""
         self.virtual_lock = QLockFile(
             str(Path("/tmp/emeet-pixy-control-virtual-camera.lock"))
         )
@@ -654,6 +681,56 @@ class PixyGUI(QMainWindow):
         )
 
         controls.addWidget(virtual_box)
+
+        # Background effects
+        effects_box = QGroupBox("Virtual Camera Background")
+        effects_layout = QGridLayout(effects_box)
+
+        self.background_mode = QComboBox()
+        self.background_mode.addItem("Original camera", "off")
+        self.background_mode.addItem("Blur background", "blur")
+        self.background_mode.addItem("Image (green screen)", "image")
+        self.background_mode.currentIndexChanged.connect(
+            self.background_effect_changed
+        )
+
+        self.background_blur = QSlider(Qt.Horizontal)
+        self.background_blur.setRange(1, 30)
+        self.background_blur.setValue(12)
+        self.background_blur.valueChanged.connect(
+            self.background_blur_changed
+        )
+        self.background_blur.sliderReleased.connect(
+            self.background_effect_updated
+        )
+
+        self.background_blur_label = QLabel("12")
+        self.background_blur_label.setAlignment(Qt.AlignCenter)
+
+        self.background_image_button = QPushButton("Choose image...")
+        self.background_image_button.clicked.connect(
+            self.choose_background_image
+        )
+        self.background_image_label = QLabel("No image selected")
+        self.background_image_label.setWordWrap(True)
+
+        effects_layout.addWidget(QLabel("Effect"), 0, 0)
+        effects_layout.addWidget(self.background_mode, 0, 1)
+        effects_layout.addWidget(QLabel("Blur strength"), 1, 0)
+        effects_layout.addWidget(self.background_blur, 1, 1)
+        effects_layout.addWidget(self.background_blur_label, 1, 2)
+        effects_layout.addWidget(self.background_image_button, 2, 0)
+        effects_layout.addWidget(self.background_image_label, 2, 1, 1, 2)
+
+        effects_note = QLabel(
+            "Image mode expects a green screen behind you. "
+            "Effects are applied to Virtual Camera output."
+        )
+        effects_note.setWordWrap(True)
+        effects_note.setStyleSheet("QLabel { color: palette(mid); }")
+        effects_layout.addWidget(effects_note, 3, 0, 1, 3)
+
+        controls.addWidget(effects_box)
 
         # Status
         status_box = QGroupBox("Camera Status")
@@ -1228,6 +1305,52 @@ class PixyGUI(QMainWindow):
         self.resolution.setEnabled(True)
         self.resolution.setToolTip("")
 
+    def background_blur_changed(self, value):
+        self.background_blur_label.setText(str(value))
+        self.background_blur_strength = value
+
+    def background_effect_changed(self):
+        self.background_effect = self.background_mode.currentData() or "off"
+        self.background_blur.setEnabled(self.background_effect == "blur")
+        self.background_image_button.setEnabled(self.background_effect == "image")
+        self.background_effect_updated()
+
+    def choose_background_image(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose background image",
+            str(Path.home()),
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp)",
+        )
+        if not path:
+            return
+
+        self.background_image = path
+        self.background_image_label.setText(Path(path).name)
+        self.settings.setValue("background/image", path)
+        self.settings.sync()
+        self.background_effect_updated()
+
+    def background_effect_updated(self):
+        if self.background_effect == "image" and not self.background_image:
+            self.message.setText("Choose a background image first")
+            return
+
+        self.settings.setValue("background/effect", self.background_effect)
+        self.settings.setValue(
+            "background/blur_strength",
+            self.background_blur_strength,
+        )
+        self.settings.sync()
+
+        if self.virtual_active:
+            self.stop_virtual_camera(False)
+            self.start_virtual_camera()
+        else:
+            self.message.setText(
+                "Background effect saved for Virtual Camera"
+            )
+
 
     def find_pixy_video_device(self):
         """
@@ -1285,6 +1408,14 @@ class PixyGUI(QMainWindow):
     def start_virtual_camera(self):
         if self.virtual_active or self.virtual_starting:
             return
+
+        if self.background_effect == "image":
+            if not self.background_image:
+                self.message.setText("Choose a background image first")
+                return
+            if not Path(self.background_image).is_file():
+                self.message.setText("The selected background image is missing")
+                return
 
         self.virtual_starting = True
         self.resolution.setEnabled(True)
@@ -1422,36 +1553,56 @@ class PixyGUI(QMainWindow):
 
         process.setProgram(FFMPEG)
 
-        process.setArguments(
-            [
-                "-hide_banner",
-                "-loglevel",
-                "warning",
+        arguments = [
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            "-f",
+            "v4l2",
+            "-input_format",
+            "mjpeg",
+            "-video_size",
+            resolution,
+            "-framerate",
+            "30",
+            "-i",
+            physical_device,
+        ]
 
-                "-f",
-                "v4l2",
-
-                "-input_format",
-                "mjpeg",
-
-                "-video_size",
-                resolution,
-
-                "-framerate",
-                "30",
-
+        if self.background_effect == "image":
+            arguments.extend([
+                "-loop",
+                "1",
                 "-i",
-                physical_device,
-
+                self.background_image,
+                "-filter_complex",
+                build_video_filter(
+                    "image",
+                    background_path=self.background_image,
+                    width=width,
+                    height=height,
+                ),
+                "-map",
+                "[v]",
+            ])
+        else:
+            arguments.extend([
                 "-vf",
-                "format=yuv420p",
+                build_video_filter(
+                    self.background_effect,
+                    self.background_blur_strength,
+                    width=width,
+                    height=height,
+                ),
+            ])
 
-                "-f",
-                "v4l2",
+        arguments.extend([
+            "-f",
+            "v4l2",
+            virtual_device,
+        ])
 
-                virtual_device,
-            ]
-        )
+        process.setArguments(arguments)
 
         process.setProcessChannelMode(
             QProcess.ProcessChannelMode.MergedChannels
@@ -1821,6 +1972,34 @@ class PixyGUI(QMainWindow):
         index = self.default_flicker.findData(default_flicker)
         if index >= 0:
             self.default_flicker.setCurrentIndex(index)
+
+        background_effect = normalize_choice(
+            self.settings.value("background/effect", "off"),
+            ("off", "blur", "image"),
+            "off",
+        )
+        index = self.background_mode.findData(background_effect)
+        if index >= 0:
+            self.background_mode.setCurrentIndex(index)
+        self.background_effect = background_effect
+
+        blur_strength = int(
+            self.settings.value("background/blur_strength", 12)
+        )
+        self.background_blur.setValue(max(1, min(30, blur_strength)))
+        self.background_blur_strength = self.background_blur.value()
+
+        background_image = str(
+            self.settings.value("background/image", "")
+        )
+        if background_image and Path(background_image).is_file():
+            self.background_image = background_image
+            self.background_image_label.setText(Path(background_image).name)
+        else:
+            self.background_image = ""
+
+        self.background_blur.setEnabled(background_effect == "blur")
+        self.background_image_button.setEnabled(background_effect == "image")
 
     def apply_default_settings(self):
         self.settings.setValue(

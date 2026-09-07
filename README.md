@@ -28,6 +28,10 @@ Release the physical camera stream so Google Meet, OBS, Teams, or another applic
 
 The optional FFmpeg + `v4l2loopback` pipeline republishes the PIXY as **EMEET PIXY Virtual Camera**.
 
+The control panel can apply a blur effect to the virtual output or composite a
+selected image behind the camera feed. Image replacement currently expects a
+green screen; the physical camera and Release Preview modes remain unchanged.
+
 ![Virtual Camera active](docs/virtual-camera-active.jpg)
 
 Tested setup (August 2026):
@@ -56,6 +60,7 @@ Tested setup (August 2026):
 - Saved pan, tilt, zoom, resolution and mode settings
 - **Release Preview** mode so Google Meet, OBS, Teams, etc. can open the physical camera directly
 - **Virtual Camera** mode using FFmpeg + `v4l2loopback`
+- Virtual Camera background effects: blur and green-screen image replacement
 - Persistent virtual camera device created by systemd
 - Dynamic discovery of physical and virtual `/dev/video*` nodes
 - HID permissions handled by a targeted udev rule

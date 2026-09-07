@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from emeet_pixy_control.backend import build_hid_report, clamp
 from emeet_pixy_control.gui import (
+    build_video_filter,
     camera_toggle_tracking_mode,
     normalize_choice,
     resolve_startup_tracking,
@@ -36,6 +37,29 @@ class BackendHelpersTest(unittest.TestCase):
 
 
 class GuiSettingsDefaultsTest(unittest.TestCase):
+    def test_video_filter_defaults_to_original(self):
+        self.assertEqual(
+            build_video_filter("off"),
+            "format=yuv420p",
+        )
+
+    def test_video_filter_clamps_blur_strength(self):
+        self.assertIn(
+            "luma_radius=30",
+            build_video_filter("blur", 99),
+        )
+
+    def test_video_filter_builds_green_screen_graph(self):
+        result = build_video_filter(
+            "image",
+            background_path="/tmp/background.png",
+            width=1920,
+            height=1080,
+        )
+        self.assertIn("scale=1920:1080", result)
+        self.assertIn("colorkey=0x00ff00", result)
+        self.assertIn("[v]", result)
+
     def test_normalize_choice_keeps_valid_values(self):
         self.assertEqual(
             normalize_choice("track", ("idle", "track", "privacy"), "idle"),
