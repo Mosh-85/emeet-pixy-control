@@ -9,7 +9,8 @@ from pathlib import Path
 
 from emeet_pixy_control import __version__
 
-from PySide6.QtCore import QEvent, QLockFile, Qt, QSettings, QTimer, QProcess
+from PySide6.QtCore import QEvent, QLockFile, Qt, QSettings, QTimer, QProcess, Slot
+from PySide6.QtDBus import QDBusConnection
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtMultimedia import QCamera, QMediaCaptureSession, QMediaDevices
 from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -675,6 +676,15 @@ class PixyGUI(QMainWindow):
 
         # Allow USB/video startup to settle before restoring saved settings.
         QTimer.singleShot(800, self.restore_camera_state)
+
+        QDBusConnection.systemBus().connect(
+            "org.freedesktop.login1",
+            "/org/freedesktop/login1",
+            "org.freedesktop.login1.Manager",
+            "PrepareForSleep",
+            self,
+            "1on_prepare_for_sleep(bool)",
+        )
 
         if self.start_minimized:
             self.showMinimized()
@@ -1912,6 +1922,12 @@ class PixyGUI(QMainWindow):
         self.update_tracking_toggle_action(
             self.settings.value("camera/tracking", "idle") == "track"
         )
+
+    @Slot(bool)
+    def on_prepare_for_sleep(self, going_to_sleep):
+        if not going_to_sleep:
+            # The camera firmware resets on resume; wait for USB re-enumeration.
+            QTimer.singleShot(3000, self.restore_camera_state)
 
     def restore_camera_state(self):
         if self.restoring:
