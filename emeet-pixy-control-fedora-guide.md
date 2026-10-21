@@ -1,6 +1,6 @@
 # Install EMEET PIXY Control on Fedora
 
-This guide covers installing [EMEET PIXY Control](https://github.com/rolfobermaier/emeet-pixy-control) on Fedora 44. It is based on a working Fedora 44 installation using kernel 7.1 and RPM Fusion.
+This guide covers installing [EMEET PIXY Control](https://github.com/Mosh-85/emeet-pixy-control) on Fedora 44. It is based on a working Fedora 44 installation using kernel 7.1 and RPM Fusion.
 
 ## What will be installed
 
@@ -99,7 +99,7 @@ This does not necessarily mean the module is broken. On Fedora, the control devi
 Clone the project and run its installer as your normal user:
 
 ```bash
-git clone https://github.com/rolfobermaier/emeet-pixy-control.git
+git clone https://github.com/Mosh-85/emeet-pixy-control.git
 cd emeet-pixy-control
 ./install.sh
 ```

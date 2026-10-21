@@ -143,7 +143,7 @@ which covers the required dependencies and installation steps. Fedora 44 with
 KDE Plasma is the primary development and test setup.
 
 ```bash
-git clone https://github.com/rolfobermaier/emeet-pixy-control.git
+git clone https://github.com/Mosh-85/emeet-pixy-control.git
 cd emeet-pixy-control
 ./install.sh
 ```
