@@ -1,37 +1,31 @@
-# EMEET PIXY Control for Linux
-This fork/branch is mainly for my own use, and do not really take other users in consideration. 
-I tested and made this version under Fedora 44 with hyprland and waybar. 
+# EMEET PIXY Control
 
-Unofficial native Linux control panel for the **EMEET PIXY** webcam (`328f:00c0`).
+Control the **EMEET PIXY** webcam (`328f:00c0`) from a native Linux desktop app.
 
-This project provides a PySide6 desktop GUI for PTZ controls, tracking/privacy modes, gesture control, audio modes, anti-flicker, live preview, resolution selection, persistence, direct camera release for conferencing apps, and an optional `v4l2loopback` virtual camera.
+EMEET PIXY Control is an unofficial, community-built PySide6 application for
+camera movement, live preview, tracking and privacy, gesture and audio modes,
+and anti-flicker settings. Use the physical camera directly in conferencing
+apps with **Release Preview**, or share it through an optional virtual camera.
 
 > **Unofficial community project.** Not affiliated with or endorsed by EMEET. EMEET and PIXY are trademarks of their respective owner.
 
 ## Status
 
-**Alpha / hardware-specific.** Tested with the EMEET PIXY on CachyOS (Arch-based). Contributions and reports from other distributions are welcome.
+**Early-stage and hardware-specific.** Tested with the EMEET PIXY on Fedora 44
+and CachyOS (Arch-based). Other distributions and setups are welcome to try it
+and report issues.
 
 ## Screenshots
 
-### Live preview and resolution selection
+### Control panel
 
-![Live preview with resolution selector](docs/live-preview-resolution.jpg)
+<p align="center">
+  <img src="docs/Control%20panel.png" alt="EMEET PIXY Control panel showing camera controls and settings" width="480">
+</p>
 
-### Release Preview
+## Tested setup
 
-Release the physical camera stream so Google Meet, OBS, Teams, or another application can use the PIXY directly while PTZ/HID controls remain available.
-
-![Release Preview mode](docs/release-preview.jpg)
-
-### Virtual Camera
-
-The optional FFmpeg + `v4l2loopback` pipeline republishes the PIXY as **EMEET PIXY Virtual Camera**.
-
-![Virtual Camera active](docs/virtual-camera-active.jpg)
-
-Tested setup (August 2026):
-
+Tested on CachyOS in August 2026 with:
 - EMEET PIXY USB ID: `328f:00c0`
 - CachyOS kernel: `7.2.0-1-cachyos`
 - Python: `3.14.7`
@@ -49,7 +43,8 @@ Tested setup (August 2026):
 - Resolution selector populated from the camera itself
 - Native PIXY zoom where supported by the active mode
 - Face tracking on/off
-- Tracking ON/OFF controls in the GUI and tray
+- System-tray icon to show/hide the control panel, toggle privacy, control tracking, or quit
+- Single-click the tray icon to toggle privacy
 - Privacy mode with pan, tilt, zoom, and tracking-state restoration
 - Gesture control on/off
 - Audio mode: Noise Cancel / Live / Original
