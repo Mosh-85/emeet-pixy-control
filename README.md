@@ -9,11 +9,13 @@ apps with **Release Preview**, or share it through an optional virtual camera.
 
 > **Unofficial community project.** Not affiliated with or endorsed by EMEET. EMEET and PIXY are trademarks of their respective owner.
 
+Developed and tested with the EMEET PIXY on **Fedora 44 with KDE Plasma**.
+
 ## Status
 
-**Early-stage and hardware-specific.** Tested with the EMEET PIXY on Fedora 44
-and CachyOS (Arch-based). Other distributions and setups are welcome to try it
-and report issues.
+**Early-stage and hardware-specific.** Also tested on CachyOS (Arch-based).
+Other distributions and desktop environments are welcome to try it and report
+issues.
 
 ## Screenshots
 
@@ -135,6 +137,10 @@ sudo apt install python3 python3-venv v4l-utils ffmpeg \
 Please open an issue or PR with corrections for your distribution.
 
 ## Install
+
+For Fedora 44, see the [Fedora installation guide](emeet-pixy-control-fedora-guide.md),
+which covers the required dependencies and installation steps. Fedora 44 with
+KDE Plasma is the primary development and test setup.
 
 ```bash
 git clone https://github.com/rolfobermaier/emeet-pixy-control.git
