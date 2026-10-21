@@ -771,9 +771,7 @@ class PixyGUI(QMainWindow):
 
     def tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self.toggle_privacy(
-                not self.bool_setting("camera/privacy_enabled", False)
-            )
+            self.toggle_privacy()
 
     def quit_application(self):
         self.quitting = True
@@ -1852,8 +1850,10 @@ class PixyGUI(QMainWindow):
         if self.tracking_off_action is not None:
             self.tracking_off_action.setEnabled(enabled)
 
-    def toggle_privacy(self, enabled):
-        self.set_privacy_mode(enabled)
+    def toggle_privacy(self):
+        self.set_privacy_mode(
+            not self.bool_setting("camera/privacy_enabled", False)
+        )
 
     def set_gesture(self, enabled):
         command = "gesture-on" if enabled else "gesture-off"
@@ -1934,6 +1934,12 @@ class PixyGUI(QMainWindow):
             return
 
         self.restoring = True
+        restore_error = None
+
+        def apply(*args):
+            nonlocal restore_error
+            if self.backend(*args) is None:
+                restore_error = self.message.text()
 
         try:
             pan = int(
@@ -1978,36 +1984,40 @@ class PixyGUI(QMainWindow):
             tilt = max(-90, min(90, tilt))
             zoom = max(100, min(150, zoom))
 
-            self.backend("pan", pan)
-            self.backend("tilt", tilt)
+            apply("pan", pan)
+            apply("tilt", tilt)
 
             if self.zoom.isEnabled():
-                self.backend("zoom", zoom)
+                apply("zoom", zoom)
 
-            self.backend(
+            apply(
                 "gesture-on" if gesture else "gesture-off"
             )
 
             if audio in ("nc", "live", "org"):
-                self.backend("audio", audio)
+                apply("audio", audio)
 
             if flicker in ("off", "50", "60"):
-                self.backend("flicker", flicker)
+                apply("flicker", flicker)
 
             # Apply privacy last: PIXY HID settings can wake the video path.
             if tracking in ("idle", "track", "privacy"):
-                self.backend(tracking)
+                apply(tracking)
                 if self.camera_override_tracking == tracking:
                     self.camera_override_tracking = None
+
+            apply("pan", pan)
+            apply("tilt", tilt)
 
             self.zoom.setValue(zoom)
             self.zoom_label.setText(str(zoom))
 
-            self.refresh_status(save=True)
+            status_ok = self.refresh_status(save=restore_error is None)
 
-            self.message.setText(
-                "Saved camera settings restored"
-            )
+            if restore_error is not None:
+                self.message.setText(restore_error)
+            elif status_ok:
+                self.message.setText("Saved camera settings restored")
 
         finally:
             self.restoring = False
@@ -2021,7 +2031,7 @@ class PixyGUI(QMainWindow):
 
         if not output:
             self.status.setText("Camera unavailable")
-            return
+            return False
 
         self.status.setText(output)
 
@@ -2071,6 +2081,7 @@ class PixyGUI(QMainWindow):
                         f"camera/{key}",
                         parsed[key]
                     )
+        return True
 
     # --------------------------------------------------
     # EXIT

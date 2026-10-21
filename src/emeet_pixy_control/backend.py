@@ -9,12 +9,20 @@ community-reverse-engineered UVC/HID protocol facts for the EMEET PIXY
 from __future__ import annotations
 
 import argparse
+import logging
 import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Iterable
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 VENDOR_ID = "328F"
 PRODUCT_ID = "00C0"
@@ -68,13 +76,15 @@ def find_video_device() -> str | None:
                 [V4L2_CTL, "-d", device, "-l"],
                 capture_output=True,
                 text=True,
-                timeout=2,
+                timeout=5,
                 check=False,
             )
         except (OSError, subprocess.SubprocessError):
             continue
         if "pan_absolute" in result.stdout and "tilt_absolute" in result.stdout:
+            logger.debug(f"Found video device: {device}")
             return device
+    logger.warning("No suitable video device found")
     return None
 
 
@@ -99,12 +109,18 @@ def find_hidraw_device() -> str | None:
 
 
 def get_control(device: str, control: str) -> int:
-    result = subprocess.run(
-        [V4L2_CTL, "-d", device, f"--get-ctrl={control}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    """Get the value of a V4L2 control."""
+    try:
+        result = subprocess.run(
+            [V4L2_CTL, "-d", device, f"--get-ctrl={control}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise PixyError(f"Failed to get control {control}: {exc}")
+
     if result.returncode != 0:
         raise PixyError(result.stderr.strip() or f"Unable to read {control}")
     if ":" not in result.stdout:
@@ -113,12 +129,18 @@ def get_control(device: str, control: str) -> int:
 
 
 def set_control(device: str, control: str, value: int) -> None:
-    result = subprocess.run(
-        [V4L2_CTL, "-d", device, f"--set-ctrl={control}={value}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    """Set the value of a V4L2 control."""
+    try:
+        result = subprocess.run(
+            [V4L2_CTL, "-d", device, f"--set-ctrl={control}={value}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise PixyError(f"Failed to set control {control}: {exc}")
+
     if result.returncode != 0:
         raise PixyError(result.stderr.strip() or f"Unable to set {control}")
 
@@ -192,6 +214,11 @@ def status_text(video_device: str) -> str:
 
 
 def execute(command: str, value: str | None = None) -> str:
+    if not isinstance(command, str):
+        raise TypeError("Command must be a string")
+    if value is not None and not isinstance(value, str):
+        raise TypeError("Value must be a string or None")
+
     video_commands = {
         "left", "right", "up", "down", "zoom-in", "zoom-out",
         "center", "pan", "tilt", "zoom", "status", "flicker",
@@ -307,6 +334,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         output = execute(args.command, args.value)
     except (PixyError, ValueError) as exc:
+        logger.error(f"Error: {exc}")
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     if output:

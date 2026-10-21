@@ -4,12 +4,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from emeet_pixy_control.backend import build_hid_report, clamp
+from emeet_pixy_control.backend import build_hid_report, clamp, execute
 from emeet_pixy_control.gui import (
     camera_toggle_tracking_mode,
     normalize_choice,
@@ -33,6 +34,26 @@ class BackendHelpersTest(unittest.TestCase):
     def test_hid_report_rejects_oversize(self):
         with self.assertRaises(Exception):
             build_hid_report(range(33))
+
+    def test_privacy_command_uses_hid_tracking_mode(self):
+        with (
+            patch(
+                "emeet_pixy_control.backend.find_hidraw_device",
+                return_value="/dev/hidraw0",
+            ),
+            patch(
+                "emeet_pixy_control.backend.set_tracking"
+            ) as set_tracking,
+        ):
+            self.assertEqual(execute("privacy"), "Privacy mode ON")
+
+        set_tracking.assert_called_once_with("/dev/hidraw0", 0x02)
+
+    def test_execute_rejects_non_string_arguments(self):
+        with self.assertRaises(TypeError):
+            execute(123)
+        with self.assertRaises(TypeError):
+            execute("status", 123)
 
 
 class GuiSettingsDefaultsTest(unittest.TestCase):
