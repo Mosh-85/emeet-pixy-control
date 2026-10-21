@@ -14,7 +14,6 @@ DESKTOP_DIR="$DATA_HOME/applications"
 ICON_DIR="$DATA_HOME/icons/hicolor/scalable/apps"
 BIN_DIR=${XDG_BIN_HOME:-"$HOME/.local/bin"}
 DESKTOP_FILE="$DESKTOP_DIR/emeet-pixy-control.desktop"
-TEST_DESKTOP_FILE="$DESKTOP_DIR/emeet-pixy-control-foreground.desktop"
 ICON_FILE="$ICON_DIR/emeet-pixy-control.svg"
 USER_SERVICE_DIR="$HOME/.config/systemd/user"
 USER_SERVICE_FILE="$USER_SERVICE_DIR/emeet-pixy-control.service"
@@ -54,14 +53,10 @@ fi
 install -m 0644 "$ROOT/assets/emeet-pixy-control.svg" "$ICON_FILE"
 
 exec_path="$VENV/bin/emeet-pixy-control"
-foreground_exec="$exec_path --foreground"
 
 sed "s#@EXEC@#$exec_path#g" "$ROOT/deploy/emeet-pixy-control.desktop.in" > "$DESKTOP_FILE"
 chmod 0644 "$DESKTOP_FILE"
-
-sed "s#@EXEC@#$foreground_exec#g" "$ROOT/deploy/emeet-pixy-control.desktop.in" | \
-    sed "s#Name=EMEET PIXY Control#Name=EMEET PIXY Control (Preview Test)#" > "$TEST_DESKTOP_FILE"
-chmod 0644 "$TEST_DESKTOP_FILE"
+rm -f "$DESKTOP_DIR/emeet-pixy-control-foreground.desktop"
 
 rm -f "$BIN_DIR/emeet-pixy-privacy-toggle" \
     "$BIN_DIR/emeet-pixy-privacy-on" \
@@ -126,7 +121,8 @@ cat <<MSG
 EMEET PIXY Control installed.
 
 Launch it from your application menu: EMEET PIXY Control
-Foreground testing launch: EMEET PIXY Control (Preview Test)
+Foreground testing remains available with:
+  $exec_path --foreground
 Background autostart: enabled for your user session
 Quick privacy actions:
   $BIN_DIR/emeet-pixy-privacy-toggle
